@@ -7,9 +7,11 @@
   "frame": {
     "version": "1",
     "name": "BORO",
-    "iconUrl": "https://simple-btc-borrow.vercel.app/icon.png",
-    "homeUrl": "https://simple-btc-borrow.vercel.app",
-    "splashImageUrl": "https://simple-btc-borrow.vercel.app/icon.png",
-    "splashBackgroundColor": "#09090b"
+    "iconUrl": "https://boro-ruddy.vercel.app/icon.png",
+    "homeUrl": "https://boro-ruddy.vercel.app",
+    "imageUrl": "https://boro-ruddy.vercel.app/icon.png",
+    "buttonTitle": "Launch App",
+    "splashImageUrl": "https://boro-ruddy.vercel.app/icon.png",
+    "splashBackgroundColor": "#ffffff"
   }
 }

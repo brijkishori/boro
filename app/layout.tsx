@@ -6,28 +6,30 @@ import { Toaster } from "@/components/ui/sonner";
 import Link from 'next/link'; 
 import { GoogleAnalytics } from '@next/third-parties/google'; 
 import CustomConnectButton from '@/components/CustomConnectButton';
+import type { Metadata } from 'next'; // <-- NEW IMPORT
 
-// --- NEW: Frame V2 Metadata Payload ---
+// --- Frame V2 Metadata Payload ---
 const frameMetadata = {
   version: "next",
-  imageUrl: "https://simple-btc-borrow.vercel.app/icon.png", // UPDATE LATER: URL to a 1:1 ratio image
+  imageUrl: "https://boro-ruddy.vercel.app/icon.png", // UPDATE LATER: URL to a 1:1 ratio image
   button: {
     title: "Launch App",
     action: {
       type: "launch_frame",
       name: "BORO",
-      url: "https://simple-btc-borrow.vercel.app", // UPDATE LATER: Your production URL
-      splashImageUrl: "https://simple-btc-borrow.vercel.app/icon.png", // UPDATE LATER
+       url: "https://boro-ruddy.vercel.app", // UPDATE LATER: Your production URL
+      splashImageUrl: "https://boro-ruddy.vercel.app/icon.png", // UPDATE LATER 
       splashBackgroundColor: "#ffffff"
     }
   }
 };
 
-export const metadata = {
+export const metadata: Metadata = {
   title: 'BORO',
   description: 'A seamless, transparent borrowing experience.',
   other: {
-    "fc:frame": JSON.stringify(frameMetadata) // <-- INJECTS THE MINI APP TAG
+    "fc:frame": JSON.stringify(frameMetadata),
+    "base:app_id": "69a329f10d00a968ea9a3a71" // <-- INJECTED HERE
   }
 };
 

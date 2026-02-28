@@ -14,7 +14,7 @@ import Link from 'next/link';
 
 export default function Dashboard() {
   const { isConnected } = useAccount();
-  const { connect, connectors } = useConnect();
+  const { connect, connectors, isPending } = useConnect(); // <-- WE ADDED isPending HERE
   
   const [isSDKLoaded, setIsSDKLoaded] = useState(false);
   const [hideZeroBalances, setHideZeroBalances] = useState(true);
@@ -29,20 +29,25 @@ export default function Dashboard() {
     { symbol: 'USDC', price: '$1.00', change: '0.00%' },
   ]);
 
-  // --- NEW: INITIALIZE MINI APP ---
+  // --- UPDATED AUTO-CONNECT LOGIC ---
   useEffect(() => {
     const initFrame = async () => {
       try {
-        // 1. Tell the Base App to drop the loading splash screen
-        sdk.actions.ready();
-        
-        // 2. Find the Farcaster connector and auto-connect the user silently
         const farcasterConnector = connectors.find((c) => c.id === 'farcaster');
+        
+        // Auto-connect if we detect the Farcaster environment
         if (farcasterConnector && !isConnected) {
           connect({ connector: farcasterConnector });
         }
+        
+        // Give Wagmi a tiny fraction of a second to initiate the connection before hiding the splash screen
+        setTimeout(() => {
+          sdk.actions.ready();
+        }, 100);
+
       } catch (err) {
         console.warn("Farcaster SDK not detected or error initializing:", err);
+        sdk.actions.ready(); // Dismiss splash screen even on error
       }
     };
 
@@ -95,10 +100,23 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
+  // --- UPDATED GRACEFUL CONNECTION FALLBACK ---
   if (!isConnected) {
     return (
-      <div className="text-center mt-20">
-        <h2 className="text-2xl font-semibold mb-4">Please connect your wallet to view markets.</h2>
+      <div className="flex flex-col items-center justify-center mt-32 space-y-6">
+        {isPending ? (
+          <div className="flex flex-col items-center space-y-4">
+            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+            <h2 className="text-xl font-semibold animate-pulse text-muted-foreground">Connecting to Wallet...</h2>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center space-y-4 text-center">
+            <h2 className="text-2xl font-semibold">Welcome to SimpleBTC Borrow</h2>
+            <p className="text-muted-foreground max-w-md">
+              Please connect your wallet using the button in the top navigation bar to view live markets.
+            </p>
+          </div>
+        )}
       </div>
     );
   }
