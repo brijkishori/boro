@@ -1,0 +1,15 @@
+{
+  "accountAssociation": {
+    "header": "",
+    "payload": "",
+    "signature": ""
+  },
+  "frame": {
+    "version": "1",
+    "name": "BORO",
+    "iconUrl": "https://simple-btc-borrow.vercel.app/icon.png",
+    "homeUrl": "https://simple-btc-borrow.vercel.app",
+    "splashImageUrl": "https://simple-btc-borrow.vercel.app/icon.png",
+    "splashBackgroundColor": "#09090b"
+  }
+}
