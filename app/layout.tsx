@@ -6,32 +6,34 @@ import { Toaster } from "@/components/ui/sonner";
 import Link from 'next/link'; 
 import { GoogleAnalytics } from '@next/third-parties/google'; 
 import CustomConnectButton from '@/components/CustomConnectButton';
-import type { Metadata } from 'next'; // <-- NEW IMPORT
+import type { Metadata } from 'next'; 
 
-// --- Frame V2 Metadata Payload ---
-const frameMetadata = {
-  version: "next",
-  imageUrl: "https://boro-ruddy.vercel.app/icon.png", // UPDATE LATER: URL to a 1:1 ratio image
-  button: {
-    title: "Launch App",
-    action: {
-      type: "launch_frame",
-      name: "BORO",
-       url: "https://boro-ruddy.vercel.app", // UPDATE LATER: Your production URL
-      splashImageUrl: "https://boro-ruddy.vercel.app/icon.png", // UPDATE LATER 
-      splashBackgroundColor: "#ffffff"
-    }
-  }
-};
+// --- NEW DYNAMIC METADATA GENERATOR ---
+export async function generateMetadata(): Promise<Metadata> {
+  const appUrl = 'https://boro-ruddy.vercel.app';
 
-export const metadata: Metadata = {
-  title: 'BORO',
-  description: 'A seamless, transparent borrowing experience.',
-  other: {
-    "fc:frame": JSON.stringify(frameMetadata),
-    "base:app_id": "69a329f10d00a968ea9a3a71" // <-- INJECTED HERE
-  }
-};
+  return {
+    title: 'Simple BTC Borrow',
+    description: 'A seamless, transparent borrowing experience.',
+    other: {
+      'base:app_id': '69a329f10d00a968ea9a3a71', // Your Base App ID is preserved here!
+      'fc:miniapp': JSON.stringify({
+        version: 'next',
+        imageUrl: `${appUrl}/icon.png`,
+        button: {
+          title: 'Launch App',
+          action: {
+            type: 'launch_miniapp',
+            name: 'BORO',
+            url: appUrl,
+            splashImageUrl: `${appUrl}/icon.png`,
+            splashBackgroundColor: '#ffffff',
+          },
+        },
+      }),
+    },
+  };
+}
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -55,7 +57,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
             <div className="flex items-center space-x-4">
               <ThemeToggle />
-              <CustomConnectButton />
+              <CustomConnectButton /> 
             </div>
 
           </nav>
