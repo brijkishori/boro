@@ -24,7 +24,7 @@ export async function GET() {
         `${appUrl}/screenshots/s3.png`  // Ensure you create this file in /public/screenshots/
       ],
       primaryCategory: "finance",
-      tags: ["defi", "lending", "bitcoin", "base","morpho","usdc","borrow"], // <-- ADDED HERE
+      tags: ["lending", "bitcoin", "base","morpho","borrow"], // <-- ADDED HERE
       heroImageUrl: `${appUrl}/hero.png`, // The discovery feed cover photo
       tagline: "Unlock BTC liquidity instantly",
       ogTitle: "Simple BTC Borrow",
