@@ -10,14 +10,14 @@ import CustomConnectButton from '@/components/CustomConnectButton';
 // --- NEW: Frame V2 Metadata Payload ---
 const frameMetadata = {
   version: "next",
-  imageUrl: "https://simple-btc-borrow.vercel.app/splash.png", // UPDATE LATER: URL to a 1:1 ratio image
+  imageUrl: "https://simple-btc-borrow.vercel.app/icon.png", // UPDATE LATER: URL to a 1:1 ratio image
   button: {
     title: "Launch App",
     action: {
       type: "launch_frame",
       name: "BORO",
       url: "https://simple-btc-borrow.vercel.app", // UPDATE LATER: Your production URL
-      splashImageUrl: "https://simple-btc-borrow.vercel.app/splash.png", // UPDATE LATER
+      splashImageUrl: "https://simple-btc-borrow.vercel.app/icon.png", // UPDATE LATER
       splashBackgroundColor: "#ffffff"
     }
   }
