@@ -14,40 +14,32 @@ import Link from 'next/link';
 
 export default function Dashboard() {
   const { isConnected } = useAccount();
-  const { connect, connectors, isPending } = useConnect(); // <-- WE ADDED isPending HERE
+  const { connect, connectors, isPending } = useConnect(); 
   
   const [isSDKLoaded, setIsSDKLoaded] = useState(false);
   const [hideZeroBalances, setHideZeroBalances] = useState(true);
   
   const [activeTab, setActiveTab] = useState('borrow');
-  const [livePrices, setLivePrices] = useState({ cbBTC: 64000, cbETH: 3100, WETH: 3100 });
+  // Removed WETH from defaults
+  const [livePrices, setLivePrices] = useState({ cbBTC: 64000, cbETH: 3100 });
 
   const [marketPrices, setMarketPrices] = useState([
     { symbol: 'cbBTC', price: 'Loading...', change: '0.00%' },
     { symbol: 'cbETH', price: 'Loading...', change: '0.00%' },
-    { symbol: 'WETH', price: 'Loading...', change: '0.00%' },
     { symbol: 'USDC', price: '$1.00', change: '0.00%' },
   ]);
 
-  // --- UPDATED AUTO-CONNECT LOGIC ---
   useEffect(() => {
     const initFrame = async () => {
       try {
         const farcasterConnector = connectors.find((c) => c.id === 'farcaster');
-        
-        // Auto-connect if we detect the Farcaster environment
         if (farcasterConnector && !isConnected) {
           connect({ connector: farcasterConnector });
         }
-        
-        // Give Wagmi a tiny fraction of a second to initiate the connection before hiding the splash screen
-        setTimeout(() => {
-          sdk.actions.ready();
-        }, 100);
-
+        setTimeout(() => { sdk.actions.ready(); }, 100);
       } catch (err) {
         console.warn("Farcaster SDK not detected or error initializing:", err);
-        sdk.actions.ready(); // Dismiss splash screen even on error
+        sdk.actions.ready(); 
       }
     };
 
@@ -60,15 +52,15 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchPrices = async () => {
       try {
-        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=coinbase-wrapped-btc,coinbase-wrapped-staked-eth,weth&vs_currencies=usd&include_24hr_change=true');
+        // Removed WETH from the Coingecko API URL
+        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=coinbase-wrapped-btc,coinbase-wrapped-staked-eth&vs_currencies=usd&include_24hr_change=true');
         if (!res.ok) return;
         const data = await res.json();
         
         if (data && data['coinbase-wrapped-btc']) {
            setLivePrices({
              cbBTC: data['coinbase-wrapped-btc'].usd,
-             cbETH: data['coinbase-wrapped-staked-eth'].usd,
-             WETH: data['weth'].usd
+             cbETH: data['coinbase-wrapped-staked-eth'].usd
            });
 
            setMarketPrices([
@@ -81,11 +73,6 @@ export default function Dashboard() {
                symbol: 'cbETH', 
                price: `$${data['coinbase-wrapped-staked-eth'].usd.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`, 
                change: `${data['coinbase-wrapped-staked-eth'].usd_24h_change > 0 ? '+' : ''}${data['coinbase-wrapped-staked-eth'].usd_24h_change.toFixed(2)}%` 
-             },
-             { 
-               symbol: 'WETH', 
-               price: `$${data['weth'].usd.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`, 
-               change: `${data['weth'].usd_24h_change > 0 ? '+' : ''}${data['weth'].usd_24h_change.toFixed(2)}%` 
              },
              { symbol: 'USDC', price: '$1.00', change: '0.00%' },
            ]);
@@ -100,7 +87,6 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  // --- UPDATED GRACEFUL CONNECTION FALLBACK ---
   if (!isConnected) {
     return (
       <div className="flex flex-col items-center justify-center mt-32 space-y-6">
@@ -122,9 +108,8 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="space-y-8">
-      {/* Dynamic Top Market Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div className="space-y-8 px-4 sm:px-0">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
         {marketPrices.map((asset) => (
           <Card key={asset.symbol} className="bg-muted/30 dark:bg-muted/10">
             <CardContent className="p-4 flex flex-col justify-center">
@@ -140,7 +125,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <h1 className="text-3xl font-bold">Manage Position</h1>
         <div className="flex items-center space-x-2">
           <Switch id="zero-balances" checked={hideZeroBalances} onCheckedChange={setHideZeroBalances} />
@@ -177,7 +162,7 @@ export default function Dashboard() {
           <div className="p-5 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-shadow">
             <div className="h-8 w-8 bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center font-bold mb-4">2</div>
             <h3 className="font-semibold mb-2">Supply Collateral</h3>
-            <p className="text-sm text-muted-foreground">Select a market and supply assets (like cbBTC or WETH). Your collateral instantly begins earning a passive supply APY.</p>
+            <p className="text-sm text-muted-foreground">Select a market and supply assets (like cbBTC or cbETH). Your collateral instantly begins earning a passive supply APY.</p>
           </div>
           <div className="p-5 rounded-xl border bg-card text-card-foreground shadow-sm hover:shadow-md transition-shadow">
             <div className="h-8 w-8 bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center font-bold mb-4">3</div>

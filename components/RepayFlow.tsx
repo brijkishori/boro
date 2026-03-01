@@ -9,7 +9,6 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 
-// --- ABIs ---
 const erc20Abi = [
   { name: 'balanceOf', type: 'function', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ name: 'balance', type: 'uint256' }] },
   { name: 'approve', type: 'function', stateMutability: 'nonpayable', inputs: [{ name: 'spender', type: 'address' }, { name: 'amount', type: 'uint256' }], outputs: [{ name: '', type: 'bool' }] },
@@ -24,8 +23,8 @@ const morphoAbi = [
 ] as const;
 
 const NETWORK_CONFIG = {
-  8453: { USDC: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', WETH: '0x4200000000000000000000000000000000000006', cbBTC: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', cbETH: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22' },
-  84532: { USDC: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', WETH: '0x4200000000000000000000000000000000000006', cbBTC: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', cbETH: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22' }
+  8453: { USDC: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', cbBTC: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', cbETH: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22' },
+  84532: { USDC: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', cbBTC: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', cbETH: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22' }
 };
 
 const MORPHO_BLUE_ADDRESS = '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb';
@@ -36,7 +35,8 @@ export default function RepayFlow() {
   const chainId = chain?.id === 84532 ? 84532 : 8453;
   const config = NETWORK_CONFIG[chainId as keyof typeof NETWORK_CONFIG];
 
-  const ASSETS = { cbBTC: { address: config.cbBTC, decimals: 8, symbol: 'cbBTC' }, cbETH: { address: config.cbETH, decimals: 18, symbol: 'cbETH' }, WETH: { address: config.WETH, decimals: 18, symbol: 'WETH' } };
+  // Removed WETH from ASSETS
+  const ASSETS = { cbBTC: { address: config.cbBTC, decimals: 8, symbol: 'cbBTC' }, cbETH: { address: config.cbETH, decimals: 18, symbol: 'cbETH' } };
   const [selectedAsset, setSelectedAsset] = useState<keyof typeof ASSETS>('cbBTC');
   
   const [repayAmount, setRepayAmount] = useState<string>('');
@@ -78,7 +78,6 @@ export default function RepayFlow() {
 
   const safeMarketId = marketParams.id !== '0x0' ? marketParams.id : '0x0000000000000000000000000000000000000000000000000000000000000000';
 
-  // We re-added a gentle 6-second poll to keep tabs synced natively
   const { data: rawContractData, refetch: refetchReads } = useReadContracts({
     contracts: [
       { address: config.USDC as `0x${string}`, abi: erc20Abi, functionName: 'balanceOf', args: [safeAddress] },
@@ -94,8 +93,6 @@ export default function RepayFlow() {
     query: { enabled: marketParams.id !== '0x0' && !!address, refetchInterval: 6000 }
   });
 
-  // --- ANTI-FLASH CACHE ---
-  // If the 6-second poll gets blocked by the RPC, this perfectly maintains the UI using the last known data
   const prevContractData = useRef<any>(null);
   const prevPositionData = useRef<any>(null);
   if (rawContractData) prevContractData.current = rawContractData;
@@ -104,7 +101,6 @@ export default function RepayFlow() {
   const contractData = rawContractData || prevContractData.current;
   const positionData = rawPositionData || prevPositionData.current;
 
-  // Safely extract USDC balance
   const usdcBalance = contractData?.[0]?.result !== undefined ? Number(formatUnits(contractData[0].result as bigint, 6)) : 0;
   const usdcAllowance = contractData?.[1]?.result !== undefined ? (contractData[1].result as bigint) : 0n;
 
@@ -192,7 +188,6 @@ export default function RepayFlow() {
           <CardContent className="space-y-6">
             <div className="flex justify-between items-center text-sm font-medium">
               <span className="text-muted-foreground">Wallet Balance: <span className="text-foreground font-bold">{usdcBalance.toFixed(2)} USDC</span></span>
-              {/* UPDATED: Active Debt text color softened for dark mode */}
               <span className="text-muted-foreground">Active Debt: <span className="text-red-600 dark:text-red-400 font-bold">{exactDebtUSDC.toFixed(6)} USDC</span></span>
             </div>
             
@@ -250,7 +245,6 @@ export default function RepayFlow() {
           <CardContent className="space-y-6">
             <div className="flex justify-between items-center text-sm font-medium">
               <span className="text-muted-foreground">Currently in Vault:</span>
-              {/* UPDATED: Added dark mode classes for the Vault badge */}
               <span className="text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 px-2 py-1 rounded font-bold">{collateralAmount.toFixed(6)} {selectedAsset}</span>
             </div>
             
@@ -269,7 +263,6 @@ export default function RepayFlow() {
                 <SelectContent>
                   <SelectItem value="cbBTC">cbBTC</SelectItem>
                   <SelectItem value="cbETH">cbETH</SelectItem>
-                  <SelectItem value="WETH">WETH</SelectItem>
                 </SelectContent>
               </Select>
             </div>

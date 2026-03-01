@@ -12,7 +12,6 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, 
 import { toast } from "sonner";
 import { Activity, ShieldCheck, AlertTriangle, Skull } from 'lucide-react'; 
 
-// --- ABIs ---
 const erc20Abi = [
   { name: 'balanceOf', type: 'function', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ name: 'balance', type: 'uint256' }] },
   { name: 'approve', type: 'function', stateMutability: 'nonpayable', inputs: [{ name: 'spender', type: 'address' }, { name: 'amount', type: 'uint256' }], outputs: [{ name: '', type: 'bool' }] },
@@ -27,8 +26,8 @@ const morphoAbi = [
 ] as const;
 
 const NETWORK_CONFIG = {
-  8453: { USDC: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', WETH: '0x4200000000000000000000000000000000000006', cbBTC: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', cbETH: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22' },
-  84532: { USDC: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', WETH: '0x4200000000000000000000000000000000000006', cbBTC: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', cbETH: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22' }
+  8453: { USDC: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', cbBTC: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', cbETH: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22' },
+  84532: { USDC: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', cbBTC: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', cbETH: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22' }
 };
 
 const MORPHO_BLUE_ADDRESS = '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb';
@@ -48,12 +47,14 @@ const generateHistoricalApyFallback = (anchorApy: number, days: number) => {
   return data.sort((a, b) => a.timestamp - b.timestamp); 
 };
 
-export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroBalances: boolean, livePrices: { cbBTC: number, cbETH: number, WETH: number } }) {
+export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroBalances: boolean, livePrices: { cbBTC: number, cbETH: number } }) {
   const { address, chain } = useAccount();
   const safeAddress = address || '0x0000000000000000000000000000000000000000';
   const chainId = chain?.id === 84532 ? 84532 : 8453;
   const config = NETWORK_CONFIG[chainId as keyof typeof NETWORK_CONFIG];
-  const ASSETS = { cbBTC: { address: config.cbBTC, decimals: 8, symbol: 'cbBTC' }, cbETH: { address: config.cbETH, decimals: 18, symbol: 'cbETH' }, WETH: { address: config.WETH, decimals: 18, symbol: 'WETH' } };
+  
+  // Removed WETH from ASSETS
+  const ASSETS = { cbBTC: { address: config.cbBTC, decimals: 8, symbol: 'cbBTC' }, cbETH: { address: config.cbETH, decimals: 18, symbol: 'cbETH' } };
 
   const [selectedAsset, setSelectedAsset] = useState<keyof typeof ASSETS>('cbBTC');
   const [supplyUsdInput, setSupplyUsdInput] = useState<string>('');
@@ -71,14 +72,13 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
   useEffect(() => {
     const fetchPrices = async () => {
       try {
-        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=coinbase-wrapped-btc,coinbase-wrapped-staked-eth,weth&vs_currencies=usd');
+        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=coinbase-wrapped-btc,coinbase-wrapped-staked-eth&vs_currencies=usd');
         if (!res.ok) return;
         const data = await res.json();
         if (data && data['coinbase-wrapped-btc']) {
           setRealTimePrices({
             cbBTC: data['coinbase-wrapped-btc']?.usd || realTimePrices.cbBTC,
-            cbETH: data['coinbase-wrapped-staked-eth']?.usd || realTimePrices.cbETH,
-            WETH: data['weth']?.usd || realTimePrices.WETH
+            cbETH: data['coinbase-wrapped-staked-eth']?.usd || realTimePrices.cbETH
           });
         }
       } catch (e) {}
@@ -127,9 +127,9 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
 
   const safeMarketId = marketParams.id !== '0x0' ? marketParams.id : '0x0000000000000000000000000000000000000000000000000000000000000000';
 
+  // UPDATED INDICES: Removed WETH, so array shifted. cbBTC is now [0], cbETH is [1], allowance is [2], market is [3].
   const { data: rawContractData, refetch: refetchReads } = useReadContracts({
     contracts: [
-      { address: config.WETH as `0x${string}`, abi: erc20Abi, functionName: 'balanceOf', args: [safeAddress] },
       { address: config.cbBTC as `0x${string}`, abi: erc20Abi, functionName: 'balanceOf', args: [safeAddress] },
       { address: config.cbETH as `0x${string}`, abi: erc20Abi, functionName: 'balanceOf', args: [safeAddress] },
       { address: currentAsset.address as `0x${string}`, abi: erc20Abi, functionName: 'allowance', args: [safeAddress, MORPHO_BLUE_ADDRESS] },
@@ -144,7 +144,6 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
     query: { enabled: marketParams.id !== '0x0' && !!address, refetchInterval: 6000 }
   });
 
-  // --- ANTI-FLASH CACHE ---
   const prevContractData = useRef<any>(null);
   const prevPositionData = useRef<any>(null);
   if (rawContractData) prevContractData.current = rawContractData;
@@ -153,7 +152,8 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
   const contractData = rawContractData || prevContractData.current;
   const positionData = rawPositionData || prevPositionData.current;
 
-  const marketData = contractData?.[4]?.result as any;
+  // Reading from index 3 due to shift
+  const marketData = contractData?.[3]?.result as any;
   const totalBorrowAssets = marketData?.[2] || 0n;
   const totalBorrowShares = marketData?.[3] || 0n;
   const borrowShares = positionData?.[1] || 0n;
@@ -169,14 +169,14 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
 
   const existingDebt = Number(formatUnits(exactDebtAssets, 6)); 
 
-  const currentPrice = selectedAsset === 'WETH' ? realTimePrices.WETH : selectedAsset === 'cbBTC' ? realTimePrices.cbBTC : realTimePrices.cbETH;
+  const currentPrice = selectedAsset === 'cbBTC' ? realTimePrices.cbBTC : realTimePrices.cbETH;
   
-  const wethBal = contractData?.[0]?.result !== undefined ? Number(formatUnits(contractData[0].result as bigint, 18)) : 0;
-  const cbBtcBal = contractData?.[1]?.result !== undefined ? Number(formatUnits(contractData[1].result as bigint, 8)) : 0;
-  const cbEthBal = contractData?.[2]?.result !== undefined ? Number(formatUnits(contractData[2].result as bigint, 18)) : 0;
-  const walletBalance = selectedAsset === 'WETH' ? wethBal : selectedAsset === 'cbBTC' ? cbBtcBal : cbEthBal;
+  const cbBtcBal = contractData?.[0]?.result !== undefined ? Number(formatUnits(contractData[0].result as bigint, 8)) : 0;
+  const cbEthBal = contractData?.[1]?.result !== undefined ? Number(formatUnits(contractData[1].result as bigint, 18)) : 0;
+  const walletBalance = selectedAsset === 'cbBTC' ? cbBtcBal : cbEthBal;
   
-  const currentAllowance = contractData?.[3]?.result !== undefined ? (contractData[3].result as bigint) : 0n;
+  // Allowance is now at index 2
+  const currentAllowance = contractData?.[2]?.result !== undefined ? (contractData[2].result as bigint) : 0n;
 
   const existingCollateralAmount = positionData?.[2] !== undefined ? Number(formatUnits(positionData[2] as bigint, currentAsset.decimals)) : 0;
   const existingCollateralUsd = existingCollateralAmount * currentPrice;
@@ -198,7 +198,6 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
 
   const healthRatio = projectedTotalCollateralUsd > 0 ? projectedLtvPercent / maxLtvPercent : 0;
   
-  // UPDATED: Health Status variables with dark mode tailwind classes
   let healthStatus = { label: 'Safe', color: 'text-green-600 dark:text-green-400', bg: 'bg-green-50 dark:bg-green-500/10', icon: ShieldCheck };
   if (isLiquidated) {
      healthStatus = { label: 'Liquidated', color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10', icon: Skull };
@@ -231,15 +230,9 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
         setSupplyUsdInput('');
         setBorrowAmount('');
       }
-      
       refetchReads();
       refetchPosition();
-      
-      setTimeout(() => {
-        refetchReads();
-        refetchPosition();
-      }, 4000);
-
+      setTimeout(() => { refetchReads(); refetchPosition(); }, 4000);
       toast.success("Transaction Confirmed!");
       resetTx();
     }
@@ -269,7 +262,6 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
           <CardContent className="p-4 flex flex-col justify-center h-full">
             <p className="text-xs text-muted-foreground font-semibold uppercase tracking-wider mb-1">Total Payout (Debt)</p>
             <p className="text-2xl font-bold text-red-500">${projectedTotalDebt.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}</p>
-            {/* UPDATED: Added dark mode classes for the Net Rate tag */}
             <p className="text-xs text-green-600 dark:text-green-400 mt-1 font-bold bg-green-50 dark:bg-green-500/10 w-fit px-2 py-[2px] rounded">Net Rate: {marketParams.borrowApy.toFixed(2)}%</p>
           </CardContent>
         </Card>
@@ -281,7 +273,6 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
           </CardContent>
         </Card>
         
-        {/* UPDATED: JSX mapping for Health Status Card to handle dark mode seamlessly */}
         <Card className={`shadow-sm border transition-colors ${isLiquidated ? 'border-red-500 dark:border-red-500/50' : 'border-muted dark:border-border/50'} ${healthStatus.bg}`}>
           <CardContent className="p-4 flex flex-col justify-center h-full relative overflow-hidden">
             <div className="flex justify-between items-start">
@@ -315,7 +306,7 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
                     <span className={`text-xs mt-1 font-bold ${isExceedingWallet ? 'text-red-500' : 'text-muted-foreground'}`}>≈ {supplyAmountToken.toFixed(8)} {selectedAsset}</span>
                   </div>
                   <Select value={selectedAsset} onValueChange={(val: any) => { setSelectedAsset(val); setSupplyUsdInput(''); setBorrowAmount(''); }}><SelectTrigger className="w-[140px] h-14 font-bold"><SelectValue /></SelectTrigger>
-                    <SelectContent><SelectItem value="cbBTC">cbBTC</SelectItem><SelectItem value="cbETH">cbETH</SelectItem><SelectItem value="WETH">WETH</SelectItem></SelectContent>
+                    <SelectContent><SelectItem value="cbBTC">cbBTC</SelectItem><SelectItem value="cbETH">cbETH</SelectItem></SelectContent>
                   </Select>
                 </div>
                 <div className="flex gap-2">
