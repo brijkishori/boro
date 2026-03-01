@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
+import { ChevronDown, ChevronUp } from 'lucide-react';
 
 const erc20Abi = [
   { name: 'balanceOf', type: 'function', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ name: 'balance', type: 'uint256' }] },
@@ -35,7 +36,6 @@ export default function RepayFlow() {
   const chainId = chain?.id === 84532 ? 84532 : 8453;
   const config = NETWORK_CONFIG[chainId as keyof typeof NETWORK_CONFIG];
 
-  // Removed WETH from ASSETS
   const ASSETS = { cbBTC: { address: config.cbBTC, decimals: 8, symbol: 'cbBTC' }, cbETH: { address: config.cbETH, decimals: 18, symbol: 'cbETH' } };
   const [selectedAsset, setSelectedAsset] = useState<keyof typeof ASSETS>('cbBTC');
   
@@ -44,6 +44,7 @@ export default function RepayFlow() {
   
   const [isMaxRepay, setIsMaxRepay] = useState(false);
   const [isMaxWithdraw, setIsMaxWithdraw] = useState(false);
+  const [showInstructions, setShowInstructions] = useState(false);
 
   const [optimisticApproval, setOptimisticApproval] = useState(false);
   const [lastAction, setLastAction] = useState<string>('');
@@ -134,24 +135,11 @@ export default function RepayFlow() {
 
   useEffect(() => {
     if (isTxSuccess) {
-      if (lastAction === 'approve') {
-        setOptimisticApproval(true);
-      } else if (lastAction === 'repay') {
-        setRepayAmount('');
-        setIsMaxRepay(false);
-      } else if (lastAction === 'withdraw') {
-        setWithdrawAmount('');
-        setIsMaxWithdraw(false);
-      }
-      
-      refetchReads();
-      refetchPosition();
-      
-      setTimeout(() => {
-        refetchReads();
-        refetchPosition();
-      }, 4000);
-
+      if (lastAction === 'approve') setOptimisticApproval(true);
+      else if (lastAction === 'repay') { setRepayAmount(''); setIsMaxRepay(false); }
+      else if (lastAction === 'withdraw') { setWithdrawAmount(''); setIsMaxWithdraw(false); }
+      refetchReads(); refetchPosition();
+      setTimeout(() => { refetchReads(); refetchPosition(); }, 4000);
       toast.success("Transaction Confirmed!");
       resetTx();
     }
@@ -161,15 +149,10 @@ export default function RepayFlow() {
     setLastAction(type);
     const market = { loanToken: config.USDC, collateralToken: currentAsset.address, oracle: marketParams.oracle as `0x${string}`, irm: marketParams.irm as `0x${string}`, lltv: marketParams.lltv };
     
-    if (type === 'approve') {
-      write({ address: config.USDC as `0x${string}`, abi: erc20Abi, functionName: 'approve', args: [MORPHO_BLUE_ADDRESS, maxUint256] });
-    } 
+    if (type === 'approve') write({ address: config.USDC as `0x${string}`, abi: erc20Abi, functionName: 'approve', args: [MORPHO_BLUE_ADDRESS, maxUint256] });
     else if (type === 'repay') {
-      if (isMaxRepay || repayAmountRaw >= exactDebtAssets) {
-        write({ address: MORPHO_BLUE_ADDRESS, abi: morphoAbi, functionName: 'repay', args: [market, 0n, borrowShares, safeAddress, '0x'] });
-      } else {
-        write({ address: MORPHO_BLUE_ADDRESS, abi: morphoAbi, functionName: 'repay', args: [market, repayAmountRaw, 0n, safeAddress, '0x'] });
-      }
+      if (isMaxRepay || repayAmountRaw >= exactDebtAssets) write({ address: MORPHO_BLUE_ADDRESS, abi: morphoAbi, functionName: 'repay', args: [market, 0n, borrowShares, safeAddress, '0x'] });
+      else write({ address: MORPHO_BLUE_ADDRESS, abi: morphoAbi, functionName: 'repay', args: [market, repayAmountRaw, 0n, safeAddress, '0x'] });
     } 
     else {
       const safeWithdrawAssets = isMaxWithdraw ? rawCollateral : parseUnits(withdrawAmount || '0', currentAsset.decimals);
@@ -178,133 +161,90 @@ export default function RepayFlow() {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-      <div className="lg:col-span-7 space-y-6">
-        
-        <Card className="shadow-lg border-muted">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-xl">1. Repay USDC Loan</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="flex justify-between items-center text-sm font-medium">
-              <span className="text-muted-foreground">Wallet Balance: <span className="text-foreground font-bold">{usdcBalance.toFixed(2)} USDC</span></span>
-              <span className="text-muted-foreground">Active Debt: <span className="text-red-600 dark:text-red-400 font-bold">{exactDebtUSDC.toFixed(6)} USDC</span></span>
-            </div>
-            
-            <div className="flex space-x-3">
-              <Input 
-                type="number" 
-                step="any" 
-                placeholder="0.00" 
-                value={repayAmount} 
-                disabled={exactDebtAssets === 0n}
-                onChange={(e) => { setRepayAmount(e.target.value); setIsMaxRepay(false); }} 
-                className={`flex-1 h-14 text-2xl font-bold px-4 ${isRepayExceedingWallet ? 'border-red-500 focus-visible:ring-red-500' : ''}`} 
-              />
-              <Button variant="outline" disabled className="w-[120px] h-14 opacity-100 font-bold">USDC</Button>
-            </div>
+    <div className="space-y-4">
+      <Card className="shadow border-muted">
+        <CardHeader className="p-4 pb-2"><CardTitle className="text-sm">1. Repay USDC Loan</CardTitle></CardHeader>
+        <CardContent className="p-4 space-y-4">
+          <div className="flex justify-between items-center text-xs font-medium">
+            <span className="text-muted-foreground">Wallet: <span className="text-foreground font-bold">{usdcBalance.toFixed(2)}</span></span>
+            <span className="text-muted-foreground">Debt: <span className="text-red-600 dark:text-red-400 font-bold">{exactDebtUSDC.toFixed(4)}</span></span>
+          </div>
+          
+          <div className="flex space-x-2">
+            <Input type="number" step="any" placeholder="0.00" value={repayAmount} disabled={exactDebtAssets === 0n} onChange={(e) => { setRepayAmount(e.target.value); setIsMaxRepay(false); }} className={`flex-1 h-12 text-lg font-bold px-3 ${isRepayExceedingWallet ? 'border-red-500' : ''}`} />
+            <Button variant="outline" disabled className="w-[80px] h-12 opacity-100 font-bold text-sm">USDC</Button>
+          </div>
 
-            <div className="flex gap-2">
-              <Button 
-                variant="outline" 
-                size="sm" 
-                className="flex-1 font-bold bg-muted" 
-                disabled={exactDebtAssets === 0n}
-                onClick={() => { setRepayAmount(exactDebtUSDC.toFixed(6)); setIsMaxRepay(true); }}
-              >
-                100% (Clear Debt)
-              </Button>
-            </div>
+          <Button variant="outline" size="sm" className="w-full h-8 font-bold bg-muted text-xs" disabled={exactDebtAssets === 0n} onClick={() => { setRepayAmount(exactDebtUSDC.toFixed(6)); setIsMaxRepay(true); }}>
+            100% (Clear Debt)
+          </Button>
 
-            <div className="pt-2 border-t">
-              {isRepayExceedingWallet ? (
-                 <Button className="w-full h-12 font-bold text-white bg-red-500 hover:bg-red-600 cursor-not-allowed" disabled>
-                   Insufficient USDC Balance
-                 </Button>
-              ) : needsApproval ? (
-                 <Button className="w-full h-12 font-bold bg-indigo-600 text-white" disabled={isTxBusy || exactDebtAssets === 0n} onClick={() => handleAction('approve')}>
-                   {isTxBusy ? 'Confirming in Wallet...' : 'Approve USDC'}
-                 </Button>
-              ) : (
-                 <Button 
-                   className="w-full h-12 font-bold bg-blue-600 text-white" 
-                   disabled={exactDebtAssets === 0n || !repayAmount || Number(repayAmount) <= 0 || isTxBusy || isFetchingMarket} 
-                   onClick={() => handleAction('repay')}
-                 >
-                   {isTxBusy ? 'Processing...' : isMaxRepay ? 'Wipe Clean & Close Loan' : 'Repay Loan'}
-                 </Button>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+          <div className="pt-2">
+            {isRepayExceedingWallet ? (
+               <Button className="w-full h-12 text-sm font-bold text-white bg-red-500 cursor-not-allowed" disabled>Insufficient USDC</Button>
+            ) : needsApproval ? (
+               <Button className="w-full h-12 text-sm font-bold bg-indigo-600 text-white" disabled={isTxBusy || exactDebtAssets === 0n} onClick={() => handleAction('approve')}>{isTxBusy ? 'Confirming...' : 'Approve USDC'}</Button>
+            ) : (
+               <Button className="w-full h-12 text-sm font-bold bg-blue-600 text-white" disabled={exactDebtAssets === 0n || !repayAmount || Number(repayAmount) <= 0 || isTxBusy || isFetchingMarket} onClick={() => handleAction('repay')}>
+                 {isTxBusy ? 'Wait...' : isMaxRepay ? 'Wipe Clean & Close' : 'Repay Loan'}
+               </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
-        <Card className="shadow-lg border-muted">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-xl">2. Withdraw Collateral</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="flex justify-between items-center text-sm font-medium">
-              <span className="text-muted-foreground">Currently in Vault:</span>
-              <span className="text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 px-2 py-1 rounded font-bold">{collateralAmount.toFixed(6)} {selectedAsset}</span>
-            </div>
-            
-            <div className="flex space-x-3">
-              <Input 
-                type="number" 
-                step="any" 
-                placeholder="0.00" 
-                value={withdrawAmount} 
-                disabled={rawCollateral === 0n}
-                onChange={(e) => { setWithdrawAmount(e.target.value); setIsMaxWithdraw(false); }} 
-                className={`flex-1 h-14 text-2xl font-bold px-4 ${isWithdrawExceedingVault ? 'border-red-500 focus-visible:ring-red-500' : ''}`} 
-              />
-              <Select value={selectedAsset} onValueChange={(val: any) => { setSelectedAsset(val); setWithdrawAmount(''); setIsMaxWithdraw(false); }}>
-                <SelectTrigger className="w-[140px] h-14 font-bold"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="cbBTC">cbBTC</SelectItem>
-                  <SelectItem value="cbETH">cbETH</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+      <Card className="shadow border-muted">
+        <CardHeader className="p-4 pb-2"><CardTitle className="text-sm">2. Withdraw Collateral</CardTitle></CardHeader>
+        <CardContent className="p-4 space-y-4">
+          <div className="flex justify-between items-center text-xs font-medium">
+            <span className="text-muted-foreground">In Vault:</span>
+            <span className="text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 px-2 py-0.5 rounded font-bold">{collateralAmount.toFixed(4)} {selectedAsset}</span>
+          </div>
+          
+          <div className="flex space-x-2">
+            <Input type="number" step="any" placeholder="0.00" value={withdrawAmount} disabled={rawCollateral === 0n} onChange={(e) => { setWithdrawAmount(e.target.value); setIsMaxWithdraw(false); }} className={`flex-1 h-12 text-lg font-bold px-3 ${isWithdrawExceedingVault ? 'border-red-500' : ''}`} />
+            <Select value={selectedAsset} onValueChange={(val: any) => { setSelectedAsset(val); setWithdrawAmount(''); setIsMaxWithdraw(false); }}>
+              <SelectTrigger className="w-[100px] h-12 text-sm font-bold"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="cbBTC">cbBTC</SelectItem><SelectItem value="cbETH">cbETH</SelectItem></SelectContent>
+            </Select>
+          </div>
 
-            <div className="flex gap-2">
-              {[25, 50, 75].map((pct) => (
-                <Button key={pct} variant="outline" size="sm" className="flex-1 font-bold" disabled={rawCollateral === 0n} onClick={() => { setWithdrawAmount(((collateralAmount * pct) / 100).toFixed(8)); setIsMaxWithdraw(false); }}>{pct}%</Button>
-              ))}
-              <Button variant="outline" size="sm" className="flex-1 font-bold bg-muted" disabled={rawCollateral === 0n} onClick={() => { setWithdrawAmount(collateralAmount.toFixed(8)); setIsMaxWithdraw(true); }}>MAX</Button>
-            </div>
+          <div className="flex gap-2">
+            {[25, 50, 75].map((pct) => (
+              <Button key={pct} variant="outline" size="sm" className="flex-1 text-xs h-8 font-bold" disabled={rawCollateral === 0n} onClick={() => { setWithdrawAmount(((collateralAmount * pct) / 100).toFixed(8)); setIsMaxWithdraw(false); }}>{pct}%</Button>
+            ))}
+            <Button variant="outline" size="sm" className="flex-1 text-xs h-8 font-bold bg-muted" disabled={rawCollateral === 0n} onClick={() => { setWithdrawAmount(collateralAmount.toFixed(8)); setIsMaxWithdraw(true); }}>MAX</Button>
+          </div>
 
-            <div className="pt-2 border-t">
-              {isWithdrawExceedingVault ? (
-                 <Button className="w-full h-12 font-bold text-white bg-red-500 hover:bg-red-600 cursor-not-allowed" disabled>
-                   Exceeds Vault Balance
-                 </Button>
-              ) : (
-                 <Button className="w-full h-12 font-bold bg-indigo-600 text-white" disabled={rawCollateral === 0n || !withdrawAmount || Number(withdrawAmount) <= 0 || isTxBusy || exactDebtAssets > 0n || isFetchingMarket} onClick={() => handleAction('withdraw')}>
-                   {exactDebtAssets > 0n ? 'Clear Debt First' : isTxBusy ? 'Processing...' : `Withdraw ${selectedAsset}`}
-                 </Button>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+          <div className="pt-2">
+            {isWithdrawExceedingVault ? (
+               <Button className="w-full h-12 text-sm font-bold text-white bg-red-500 cursor-not-allowed" disabled>Exceeds Vault</Button>
+            ) : (
+               <Button className="w-full h-12 text-sm font-bold bg-indigo-600 text-white" disabled={rawCollateral === 0n || !withdrawAmount || Number(withdrawAmount) <= 0 || isTxBusy || exactDebtAssets > 0n || isFetchingMarket} onClick={() => handleAction('withdraw')}>
+                 {exactDebtAssets > 0n ? 'Clear Debt First' : isTxBusy ? 'Wait...' : `Withdraw ${selectedAsset}`}
+               </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
-      </div>
+      <Button variant="ghost" className="w-full flex items-center justify-center space-x-2 text-muted-foreground text-xs font-semibold py-4" onClick={() => setShowInstructions(!showInstructions)}>
+        <span>Unwind Instructions</span>
+        {showInstructions ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
+      </Button>
 
-      <div className="lg:col-span-5 space-y-6">
-        <Card className="shadow border-muted bg-muted/20 dark:bg-muted/10 h-full">
-          <CardHeader>
-            <CardTitle className="text-xl">Unwind Instructions</CardTitle>
-          </CardHeader>
-          <CardContent className="text-sm space-y-4 text-muted-foreground leading-relaxed">
-            <p>To safely close your position, execute the unwind process in order:</p>
-            <ol className="list-decimal list-inside space-y-3 font-medium text-foreground">
-              <li><strong>Approve USDC:</strong> Grant Morpho permission to pull repayment funds. (You only need to do this once).</li>
-              <li><strong>Repay Debt:</strong> Pay back the USDC you borrowed. Click the <em>"100% (Clear Debt)"</em> button to perfectly wipe out all accumulating interest automatically.</li>
-              <li><strong>Withdraw Collateral:</strong> Once your debt is precisely 0.00, the final button will unlock so you can retrieve your locked collateral back into your wallet.</li>
+      {showInstructions && (
+        <Card className="shadow border-muted bg-muted/20 animate-in slide-in-from-top-4 duration-300">
+          <CardContent className="p-4 text-xs space-y-3 text-muted-foreground leading-relaxed">
+            <p>To safely close your position:</p>
+            <ol className="list-decimal list-inside space-y-2 font-medium text-foreground">
+              <li><strong>Approve USDC:</strong> Grant permission to pull funds.</li>
+              <li><strong>Repay Debt:</strong> Click "100% (Clear Debt)" to perfectly wipe out accumulating interest.</li>
+              <li><strong>Withdraw:</strong> Once debt is 0.00, the withdraw button unlocks.</li>
             </ol>
           </CardContent>
         </Card>
-      </div>
+      )}
     </div>
   );
 }

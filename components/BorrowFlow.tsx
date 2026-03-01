@@ -10,7 +10,7 @@ import { Slider } from '@/components/ui/slider';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer } from 'recharts';
 import { toast } from "sonner";
-import { Activity, ShieldCheck, AlertTriangle, Skull } from 'lucide-react'; 
+import { Activity, ShieldCheck, AlertTriangle, Skull, ChevronDown, ChevronUp } from 'lucide-react'; 
 
 const erc20Abi = [
   { name: 'balanceOf', type: 'function', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ name: 'balance', type: 'uint256' }] },
@@ -53,7 +53,6 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
   const chainId = chain?.id === 84532 ? 84532 : 8453;
   const config = NETWORK_CONFIG[chainId as keyof typeof NETWORK_CONFIG];
   
-  // Removed WETH from ASSETS
   const ASSETS = { cbBTC: { address: config.cbBTC, decimals: 8, symbol: 'cbBTC' }, cbETH: { address: config.cbETH, decimals: 18, symbol: 'cbETH' } };
 
   const [selectedAsset, setSelectedAsset] = useState<keyof typeof ASSETS>('cbBTC');
@@ -62,6 +61,9 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
   const [simulatedDrop, setSimulatedDrop] = useState<number>(0);
   const [apyView, setApyView] = useState<'chart' | 'table'>('chart');
   const [historyDays, setHistoryDays] = useState<number>(30); 
+  
+  // NEW: Toggle for massive charts to save vertical space
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [optimisticApproval, setOptimisticApproval] = useState(false);
   const [lastAction, setLastAction] = useState<string>('');
@@ -127,7 +129,6 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
 
   const safeMarketId = marketParams.id !== '0x0' ? marketParams.id : '0x0000000000000000000000000000000000000000000000000000000000000000';
 
-  // UPDATED INDICES: Removed WETH, so array shifted. cbBTC is now [0], cbETH is [1], allowance is [2], market is [3].
   const { data: rawContractData, refetch: refetchReads } = useReadContracts({
     contracts: [
       { address: config.cbBTC as `0x${string}`, abi: erc20Abi, functionName: 'balanceOf', args: [safeAddress] },
@@ -152,7 +153,6 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
   const contractData = rawContractData || prevContractData.current;
   const positionData = rawPositionData || prevPositionData.current;
 
-  // Reading from index 3 due to shift
   const marketData = contractData?.[3]?.result as any;
   const totalBorrowAssets = marketData?.[2] || 0n;
   const totalBorrowShares = marketData?.[3] || 0n;
@@ -175,7 +175,6 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
   const cbEthBal = contractData?.[1]?.result !== undefined ? Number(formatUnits(contractData[1].result as bigint, 18)) : 0;
   const walletBalance = selectedAsset === 'cbBTC' ? cbBtcBal : cbEthBal;
   
-  // Allowance is now at index 2
   const currentAllowance = contractData?.[2]?.result !== undefined ? (contractData[2].result as bigint) : 0n;
 
   const existingCollateralAmount = positionData?.[2] !== undefined ? Number(formatUnits(positionData[2] as bigint, currentAsset.decimals)) : 0;
@@ -224,14 +223,9 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
 
   useEffect(() => {
     if (isTxSuccess) {
-      if (lastAction === 'approve') {
-        setOptimisticApproval(true);
-      } else {
-        setSupplyUsdInput('');
-        setBorrowAmount('');
-      }
-      refetchReads();
-      refetchPosition();
+      if (lastAction === 'approve') setOptimisticApproval(true);
+      else { setSupplyUsdInput(''); setBorrowAmount(''); }
+      refetchReads(); refetchPosition();
       setTimeout(() => { refetchReads(); refetchPosition(); }, 4000);
       toast.success("Transaction Confirmed!");
       resetTx();
@@ -248,159 +242,130 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* 2x2 Tight Mobile Grid */}
+      <div className="grid grid-cols-2 gap-3">
         <Card className="shadow-sm border-muted">
-          <CardContent className="p-4 flex flex-col justify-center h-full">
-            <p className="text-xs text-muted-foreground font-semibold uppercase tracking-wider mb-1">Your Collateral</p>
-            <p className="text-2xl font-bold">${projectedTotalCollateralUsd.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
-            <p className="text-xs text-blue-600 mt-1 font-medium">{projectedTotalCollateralAmount.toFixed(6)} {selectedAsset}</p>
+          <CardContent className="p-3 flex flex-col justify-center h-full">
+            <p className="text-[10px] text-muted-foreground font-semibold uppercase mb-0.5">Collateral</p>
+            <p className="text-lg font-bold">${projectedTotalCollateralUsd.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
           </CardContent>
         </Card>
         <Card className="shadow-sm border-muted">
-          <CardContent className="p-4 flex flex-col justify-center h-full">
-            <p className="text-xs text-muted-foreground font-semibold uppercase tracking-wider mb-1">Total Payout (Debt)</p>
-            <p className="text-2xl font-bold text-red-500">${projectedTotalDebt.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}</p>
-            <p className="text-xs text-green-600 dark:text-green-400 mt-1 font-bold bg-green-50 dark:bg-green-500/10 w-fit px-2 py-[2px] rounded">Net Rate: {marketParams.borrowApy.toFixed(2)}%</p>
+          <CardContent className="p-3 flex flex-col justify-center h-full">
+            <p className="text-[10px] text-muted-foreground font-semibold uppercase mb-0.5">Debt Payout</p>
+            <p className="text-lg font-bold text-red-500">${projectedTotalDebt.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
           </CardContent>
         </Card>
         <Card className="shadow-sm border-muted">
-          <CardContent className="p-4 flex flex-col justify-center h-full">
-            <p className="text-xs text-muted-foreground font-semibold uppercase tracking-wider mb-1">Available to Borrow</p>
-            <p className="text-2xl font-bold text-foreground">${projectedAvailableToBorrow.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
-            <p className="text-xs text-muted-foreground mt-1 font-medium">Out of ${absoluteMaxBorrowCapacity.toFixed(2)} Max</p>
+          <CardContent className="p-3 flex flex-col justify-center h-full">
+            <p className="text-[10px] text-muted-foreground font-semibold uppercase mb-0.5">Avail. to Borrow</p>
+            <p className="text-lg font-bold text-foreground">${projectedAvailableToBorrow.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
           </CardContent>
         </Card>
         
-        <Card className={`shadow-sm border transition-colors ${isLiquidated ? 'border-red-500 dark:border-red-500/50' : 'border-muted dark:border-border/50'} ${healthStatus.bg}`}>
-          <CardContent className="p-4 flex flex-col justify-center h-full relative overflow-hidden">
-            <div className="flex justify-between items-start">
-              <div>
-                <p className={`text-xs font-bold uppercase tracking-wider mb-1 ${healthStatus.color}`}>Health: {healthStatus.label}</p>
-                <p className={`text-2xl font-black ${healthStatus.color}`}>{projectedLtvPercent.toFixed(1)}% <span className="text-sm font-semibold opacity-70">LTV</span></p>
-                <p className={`text-xs mt-1 font-medium ${healthStatus.color} opacity-80`}>Max LTV: {maxLtvPercent.toFixed(1)}%</p>
-              </div>
-              <healthStatus.icon className={`h-8 w-8 ${healthStatus.color} opacity-80`} />
-            </div>
+        <Card className={`shadow-sm border transition-colors ${isLiquidated ? 'border-red-500' : 'border-muted'} ${healthStatus.bg}`}>
+          <CardContent className="p-3 flex flex-col justify-center h-full">
+            <p className={`text-[10px] font-bold uppercase mb-0.5 ${healthStatus.color}`}>{healthStatus.label}</p>
+            <p className={`text-lg font-black ${healthStatus.color}`}>{projectedLtvPercent.toFixed(1)}% <span className="text-xs font-semibold opacity-70">LTV</span></p>
           </CardContent>
         </Card>
-
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-7">
-          <Card className="shadow-lg h-full border-muted">
-            <CardHeader><CardTitle className="text-2xl font-bold">Manage Position</CardTitle></CardHeader>
-            <CardContent className="space-y-8">
-              
-              <div className="space-y-3">
-                <div className="flex justify-between items-center mb-1">
-                  <label className="text-base font-semibold">1. Supply Additional Collateral (USD)</label>
-                  <span className="text-xs font-bold bg-muted px-2 py-1 rounded text-muted-foreground">Wallet: {walletBalance.toFixed(4)} {selectedAsset} (${(walletBalance * currentPrice).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})})</span>
-                </div>
-                <div className="flex space-x-3">
-                  <div className="flex-1 flex flex-col relative">
-                    <span className="absolute left-4 top-4 text-xl font-bold text-muted-foreground">$</span>
-                    <Input type="number" step="any" placeholder="0.00" value={supplyUsdInput} onChange={(e) => setSupplyUsdInput(e.target.value)} className={`h-14 text-2xl font-bold pl-8 pr-4 ${isExceedingWallet ? 'border-red-500 focus-visible:ring-red-500' : ''}`} />
-                    <span className={`text-xs mt-1 font-bold ${isExceedingWallet ? 'text-red-500' : 'text-muted-foreground'}`}>≈ {supplyAmountToken.toFixed(8)} {selectedAsset}</span>
-                  </div>
-                  <Select value={selectedAsset} onValueChange={(val: any) => { setSelectedAsset(val); setSupplyUsdInput(''); setBorrowAmount(''); }}><SelectTrigger className="w-[140px] h-14 font-bold"><SelectValue /></SelectTrigger>
-                    <SelectContent><SelectItem value="cbBTC">cbBTC</SelectItem><SelectItem value="cbETH">cbETH</SelectItem></SelectContent>
-                  </Select>
-                </div>
-                <div className="flex gap-2">
-                  {[25, 50, 75, 100].map(pct => (
-                    <Button key={pct} variant="outline" size="sm" className="flex-1 font-bold" onClick={() => setSupplyUsdInput(((walletBalance * currentPrice * pct) / 100).toFixed(2))}>{pct === 100 ? 'MAX' : `${pct}%`}</Button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-3 pt-4 border-t">
-                <div className="flex justify-between items-center">
-                  <label className="text-base font-semibold">2. Borrow New USDC</label>
-                  <span className="text-sm text-muted-foreground font-medium">Safe Limit: <span className="text-foreground font-bold">{projectedAvailableToBorrow.toFixed(2)} USDC</span></span>
-                </div>
-                <div className="flex space-x-3">
-                  <Input type="number" step="any" placeholder="0.00" value={borrowAmount} onChange={(e) => setBorrowAmount(e.target.value)} className={`flex-1 h-14 text-2xl font-bold px-4 ${isExceedingMaxBorrow ? 'border-red-500 focus-visible:ring-red-500' : ''}`} />
-                  <Button variant="outline" disabled className="w-[120px] h-14 opacity-100 font-bold">USDC</Button>
-                </div>
-              </div>
-
-              <div className="space-y-5 pt-4 border-t">
-                <div className="flex justify-between items-center"><span className="text-base font-semibold">Projected LTV Target</span><span className={`text-xl font-bold ${healthStatus.color}`}>{projectedLtvPercent.toFixed(1)}%</span></div>
-                <Slider value={[projectedLtvPercent]} max={dynamicLLTV * 100} step={0.1} onValueChange={(val) => { 
-                    const targetTotalDebt = (projectedTotalCollateralUsd * val[0]) / 100;
-                    const additionalBorrowNeeded = Math.max(0, targetTotalDebt - existingDebt);
-                    setBorrowAmount(additionalBorrowNeeded > 0 ? additionalBorrowNeeded.toFixed(2) : ''); 
-                  }} disabled={projectedTotalCollateralAmount === 0} />
-              </div>
-
-              <div className="pt-6 border-t flex space-x-3">
-                {isExceedingWallet ? (
-                   <Button className="w-full h-14 font-bold text-white bg-red-500 hover:bg-red-600 cursor-not-allowed" disabled>Insufficient {selectedAsset} Balance</Button>
-                ) : needsApproval ? (
-                  <Button className="w-full h-14 font-bold bg-indigo-600 text-white" disabled={isTxBusy} onClick={() => handleAction('approve')}>{isTxBusy ? 'Confirming in Wallet...' : 'Approve Asset'}</Button>
-                ) : (
-                  <>
-                    <Button className="flex-1 h-14 font-bold bg-indigo-600 text-white" disabled={supplyAmountToken <= 0 || isTxBusy || isFetchingMarket} onClick={() => handleAction('supply')}>{isTxBusy ? 'Processing...' : 'Supply Collateral'}</Button>
-                    <Button className="flex-1 h-14 font-bold bg-blue-600 text-white" disabled={borrowAmountValue <= 0 || isExceedingMaxBorrow || isTxBusy || isFetchingMarket} onClick={() => handleAction('borrow')}>{isTxBusy ? 'Processing...' : 'Borrow USDC'}</Button>
-                  </>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="lg:col-span-5 space-y-6">
-          <Card className="shadow border-muted">
-            <CardHeader><CardTitle className="text-xl">Position Risk (Stress Test)</CardTitle></CardHeader>
-            <CardContent className="space-y-6">
-              <div className="p-4 bg-muted/40 rounded-lg border flex justify-between items-center"><span className="text-muted-foreground">Liquidation Price</span><span className="font-black text-xl">{projectedTotalDebt > 0 ? `$${liquidationPrice.toFixed(2)}` : '$0.00'}</span></div>
-              <div className="space-y-4">
-                <div className="flex justify-between text-sm font-semibold text-muted-foreground"><span>Market Drop Simulation</span><span>-{simulatedDrop}%</span></div>
-                <Slider value={[simulatedDrop]} max={99} step={1} onValueChange={(v) => setSimulatedDrop(v[0])} />
-                <div className="flex justify-between text-sm font-bold"><span>Price: ${(simulatedPrice).toFixed(0)}</span><span className={simulatedLtv >= (dynamicLLTV * 100) ? 'text-red-500' : 'text-orange-500'}>{simulatedLtv >= (dynamicLLTV * 100) ? 'LIQUIDATED' : `LTV: ${simulatedLtv.toFixed(1)}%`}</span></div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="shadow border-muted flex flex-col h-[340px]">
-            <CardHeader className="pb-2 flex flex-row items-center justify-between">
-              <CardTitle className="text-xl">Historical APY</CardTitle>
-              <div className="flex bg-muted p-1 rounded-md">
-                <Button variant={apyView === 'chart' ? 'default' : 'ghost'} size="sm" className="h-6 px-3 text-xs" onClick={() => setApyView('chart')}>Chart</Button>
-                <Button variant={apyView === 'table' ? 'default' : 'ghost'} size="sm" className="h-6 px-3 text-xs" onClick={() => setApyView('table')}>Table</Button>
-              </div>
-            </CardHeader>
-            <div className="px-6 flex space-x-1">
-               {[30, 60, 180, 365].map((days) => (
-                  <Button key={days} variant={historyDays === days ? 'secondary' : 'ghost'} size="sm" onClick={() => setHistoryDays(days)} className="text-[11px] h-7 px-3 font-bold border">
-                     {days === 30 ? '1M' : days === 60 ? '2M' : days === 180 ? '6M' : '1Y'}
-                  </Button>
-               ))}
+      <Card className="shadow-lg border-muted">
+        <CardContent className="p-4 space-y-6">
+          
+          <div className="space-y-3">
+            <div className="flex justify-between items-center mb-1">
+              <label className="text-sm font-semibold">1. Supply {selectedAsset}</label>
+              <span className="text-[10px] font-bold bg-muted px-2 py-1 rounded text-muted-foreground">Wallet: {walletBalance.toFixed(4)}</span>
             </div>
-            <CardContent className="flex-1 min-h-0 pt-4 pb-6 px-4">
-              {apyView === 'chart' ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#888" opacity={0.2} />
-                    <XAxis dataKey="date" tick={{fontSize: 10}} tickLine={false} axisLine={false} />
-                    <YAxis tick={{fontSize: 10}} tickLine={false} axisLine={false} tickFormatter={v => `${v}%`} width={35} domain={['dataMin - 1', 'dataMax + 1']} />
-                    <ChartTooltip contentStyle={{ borderRadius: '8px', fontSize: '12px' }} formatter={v => [`${v}%`, 'APY']} />
-                    <Line type="monotone" dataKey="apy" stroke="#3b82f6" strokeWidth={2.5} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="border rounded-lg overflow-y-auto h-full text-xs">
-                  <table className="w-full text-left"><thead className="bg-muted sticky top-0 font-bold"><tr><th className="p-2">Date</th><th className="p-2 text-right">APY</th></tr></thead>
-                  <tbody>{chartData.slice().reverse().map((r, i) => (<tr key={i} className="border-t"><td className="p-2 font-medium">{r.date}</td><td className="p-2 text-right font-bold text-blue-500">{r.apy}%</td></tr>))}</tbody></table>
-                </div>
-              )}
+            <div className="flex space-x-2">
+              <div className="flex-1 flex flex-col relative">
+                <span className="absolute left-3 top-3.5 text-lg font-bold text-muted-foreground">$</span>
+                <Input type="number" step="any" placeholder="0.00" value={supplyUsdInput} onChange={(e) => setSupplyUsdInput(e.target.value)} className={`h-12 text-lg font-bold pl-7 pr-2 ${isExceedingWallet ? 'border-red-500' : ''}`} />
+              </div>
+              <Select value={selectedAsset} onValueChange={(val: any) => { setSelectedAsset(val); setSupplyUsdInput(''); setBorrowAmount(''); }}>
+                <SelectTrigger className="w-[100px] h-12 text-sm font-bold"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="cbBTC">cbBTC</SelectItem><SelectItem value="cbETH">cbETH</SelectItem></SelectContent>
+              </Select>
+            </div>
+            <div className="flex gap-2">
+              {[25, 50, 75, 100].map(pct => (
+                <Button key={pct} variant="outline" size="sm" className="flex-1 text-xs h-8 font-bold" onClick={() => setSupplyUsdInput(((walletBalance * currentPrice * pct) / 100).toFixed(2))}>{pct === 100 ? 'MAX' : `${pct}%`}</Button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-3 pt-4 border-t">
+            <div className="flex justify-between items-center">
+              <label className="text-sm font-semibold">2. Borrow USDC</label>
+              <span className="text-[10px] text-muted-foreground font-medium">Safe Limit: <span className="text-foreground font-bold">{projectedAvailableToBorrow.toFixed(0)}</span></span>
+            </div>
+            <div className="flex space-x-2">
+              <Input type="number" step="any" placeholder="0.00" value={borrowAmount} onChange={(e) => setBorrowAmount(e.target.value)} className={`flex-1 h-12 text-lg font-bold px-3 ${isExceedingMaxBorrow ? 'border-red-500' : ''}`} />
+              <Button variant="outline" disabled className="w-[80px] h-12 text-sm opacity-100 font-bold">USDC</Button>
+            </div>
+          </div>
+
+          <div className="pt-4 border-t flex flex-col space-y-3">
+            {isExceedingWallet ? (
+               <Button className="w-full h-12 font-bold text-white bg-red-500 cursor-not-allowed" disabled>Insufficient {selectedAsset}</Button>
+            ) : needsApproval ? (
+              <Button className="w-full h-12 font-bold bg-indigo-600 text-white" disabled={isTxBusy} onClick={() => handleAction('approve')}>{isTxBusy ? 'Confirming...' : 'Approve Asset'}</Button>
+            ) : (
+              <div className="flex space-x-2">
+                <Button className="flex-1 h-12 text-sm font-bold bg-indigo-600 text-white" disabled={supplyAmountToken <= 0 || isTxBusy || isFetchingMarket} onClick={() => handleAction('supply')}>{isTxBusy ? 'Wait...' : 'Supply'}</Button>
+                <Button className="flex-1 h-12 text-sm font-bold bg-blue-600 text-white" disabled={borrowAmountValue <= 0 || isExceedingMaxBorrow || isTxBusy || isFetchingMarket} onClick={() => handleAction('borrow')}>{isTxBusy ? 'Wait...' : 'Borrow'}</Button>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Advanced Analytics Toggle */}
+      <Button 
+        variant="ghost" 
+        className="w-full flex items-center justify-center space-x-2 text-muted-foreground text-xs font-semibold py-4"
+        onClick={() => setShowAdvanced(!showAdvanced)}
+      >
+        <span>Advanced Analytics</span>
+        {showAdvanced ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
+      </Button>
+
+      {showAdvanced && (
+        <div className="space-y-4 animate-in slide-in-from-top-4 duration-300">
+          <Card className="shadow border-muted">
+            <CardHeader className="p-4 pb-2"><CardTitle className="text-sm">Position Stress Test</CardTitle></CardHeader>
+            <CardContent className="p-4 space-y-4">
+              <div className="p-3 bg-muted/40 rounded border flex justify-between items-center"><span className="text-xs text-muted-foreground">Liquidation Price</span><span className="font-black text-sm">{projectedTotalDebt > 0 ? `$${liquidationPrice.toFixed(2)}` : '$0.00'}</span></div>
+              <div className="space-y-3">
+                <div className="flex justify-between text-xs font-semibold text-muted-foreground"><span>Market Drop</span><span>-{simulatedDrop}%</span></div>
+                <Slider value={[simulatedDrop]} max={99} step={1} onValueChange={(v) => setSimulatedDrop(v[0])} />
+                <div className="flex justify-between text-xs font-bold"><span>Price: ${(simulatedPrice).toFixed(0)}</span><span className={simulatedLtv >= (dynamicLLTV * 100) ? 'text-red-500' : 'text-orange-500'}>{simulatedLtv >= (dynamicLLTV * 100) ? 'LIQ.' : `LTV: ${simulatedLtv.toFixed(1)}%`}</span></div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="shadow border-muted flex flex-col h-[280px]">
+            <CardHeader className="p-4 pb-2 flex flex-row items-center justify-between">
+              <CardTitle className="text-sm">Historical APY</CardTitle>
+            </CardHeader>
+            <CardContent className="flex-1 min-h-0 px-2 pb-4">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#888" opacity={0.2} />
+                  <XAxis dataKey="date" tick={{fontSize: 10}} tickLine={false} axisLine={false} />
+                  <YAxis tick={{fontSize: 10}} tickLine={false} axisLine={false} tickFormatter={v => `${v}%`} width={35} domain={['dataMin - 1', 'dataMax + 1']} />
+                  <ChartTooltip contentStyle={{ borderRadius: '8px', fontSize: '12px' }} formatter={v => [`${v}%`, 'APY']} />
+                  <Line type="monotone" dataKey="apy" stroke="#3b82f6" strokeWidth={2.5} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
             </CardContent>
           </Card>
         </div>
-      </div>
+      )}
     </div>
   );
 }

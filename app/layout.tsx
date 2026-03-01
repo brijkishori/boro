@@ -6,7 +6,6 @@ import { GoogleAnalytics } from '@next/third-parties/google';
 import Navbar from '@/components/Navbar';
 import type { Metadata } from 'next'; 
 
-// --- NEW DYNAMIC METADATA GENERATOR ---
 export async function generateMetadata(): Promise<Metadata> {
   const appUrl = 'https://boro-ruddy.vercel.app';
 
@@ -36,12 +35,13 @@ export async function generateMetadata(): Promise<Metadata> {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="min-h-screen bg-background text-foreground font-sans antialiased">
+      {/* Added overflow-x-hidden to strictly kill horizontal scrolling */}
+      <body className="min-h-screen bg-background text-foreground font-sans antialiased overflow-x-hidden">
         <Providers>
-          
           <Navbar />
           
-          <main className="container mx-auto max-w-5xl py-10">
+          {/* Tighter mobile padding and max-width */}
+          <main className="w-full max-w-md mx-auto py-4 px-3 overflow-x-hidden">
             {children}
           </main>
           <Toaster position="bottom-right" theme="system" /> 
