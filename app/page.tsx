@@ -130,7 +130,7 @@ export default function Dashboard() {
             <div className="h-6 w-6 shrink-0 bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center font-bold text-xs mt-0.5">2</div>
             <div>
               <h3 className="text-sm font-semibold">Supply Collateral</h3>
-              <p className="text-xs text-muted-foreground mt-0.5">Select a market and supply assets. Your collateral instantly begins earning APY.</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Select a market and supply assets.</p>
             </div>
           </div>
           <div className="p-3 rounded-xl border bg-card text-card-foreground shadow-sm flex items-start space-x-3">
