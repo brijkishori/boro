@@ -279,7 +279,10 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
           <div className="space-y-3">
             <div className="flex justify-between items-center mb-1">
               <label className="text-sm font-semibold">1. Supply {selectedAsset}</label>
-              <span className="text-[10px] font-bold bg-muted px-2 py-1 rounded text-muted-foreground">Wallet: {walletBalance.toFixed(4)}</span>
+              {/* RESTORED: Asset symbol and USD value calculation */}
+              <span className="text-[10px] font-bold bg-muted px-2 py-1 rounded text-muted-foreground truncate max-w-[180px]">
+                Wallet: {walletBalance.toFixed(4)} {selectedAsset} (${(walletBalance * currentPrice).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})})
+              </span>
             </div>
             <div className="flex space-x-2">
               <div className="flex-1 flex flex-col relative">
@@ -301,7 +304,8 @@ export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroB
           <div className="space-y-3 pt-4 border-t">
             <div className="flex justify-between items-center">
               <label className="text-sm font-semibold">2. Borrow USDC</label>
-              <span className="text-[10px] text-muted-foreground font-medium">Safe Limit: <span className="text-foreground font-bold">{projectedAvailableToBorrow.toFixed(0)}</span></span>
+              {/* RESTORED: 2 decimal places and the "USDC" label */}
+              <span className="text-[10px] text-muted-foreground font-medium">Safe Limit: <span className="text-foreground font-bold">{projectedAvailableToBorrow.toFixed(2)} USDC</span></span>
             </div>
             <div className="flex space-x-2">
               <Input type="number" step="any" placeholder="0.00" value={borrowAmount} onChange={(e) => setBorrowAmount(e.target.value)} className={`flex-1 h-12 text-lg font-bold px-3 ${isExceedingMaxBorrow ? 'border-red-500' : ''}`} />

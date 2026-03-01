@@ -11,12 +11,12 @@ export default function Navbar() {
 
   return (
     <nav className="relative border-b bg-background w-full">
-      {/* Reduced padding to p-3 for mobile tightness */}
       <div className="flex items-center justify-between p-3 max-w-md mx-auto">
         
         <div className="flex items-center">
-          <Link href="/" className="text-lg font-bold tracking-tight hover:opacity-80 transition-opacity">
-            Simple<span className="text-blue-500">BTC</span>
+          {/* Restored the word "Borrow" here */}
+          <Link href="/" className="text-lg font-bold tracking-tight hover:opacity-80 transition-opacity whitespace-nowrap">
+            Simple<span className="text-blue-500">BTC</span> Borrow
           </Link>
         </div>
 
@@ -37,6 +37,7 @@ export default function Navbar() {
         <div className="absolute top-full left-0 w-full bg-background border-b shadow-lg z-50">
           <div className="flex flex-col px-4 py-3 space-y-2 text-sm font-medium text-muted-foreground">
             <Link href="/" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-foreground transition-colors block py-2 border-b border-muted">Home</Link>
+            <Link href="/#how-it-works" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-foreground transition-colors block py-2 border-b border-muted">How it Works</Link>
             <Link href="/faq" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-foreground transition-colors block py-2 border-b border-muted">FAQ</Link>
             <Link href="/contact" onClick={() => setIsMobileMenuOpen(false)} className="hover:text-foreground transition-colors block py-2">Contact</Link>
           </div>

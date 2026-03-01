@@ -71,7 +71,7 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="flex flex-col items-center space-y-4 text-center">
-            <h2 className="text-xl font-semibold">Welcome to SimpleBTC</h2>
+            <h2 className="text-xl font-semibold">Welcome to SimpleBTC Borrow</h2>
             <p className="text-sm text-muted-foreground">Please connect your wallet above.</p>
           </div>
         )}
@@ -113,12 +113,49 @@ export default function Dashboard() {
         </div>
       </Tabs>
 
-      {/* Tightly Compacted Footer */}
+      {/* RESTORED: Compact Mobile How It Works Section */}
+      <section id="how-it-works" className="mt-8 pt-8 border-t border-muted">
+        <h2 className="text-lg font-bold mb-4 text-center">
+          How to Use Simple<span className="text-blue-500">BTC</span>
+        </h2>
+        <div className="grid grid-cols-1 gap-3">
+          <div className="p-3 rounded-xl border bg-card text-card-foreground shadow-sm flex items-start space-x-3">
+            <div className="h-6 w-6 shrink-0 bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center font-bold text-xs mt-0.5">1</div>
+            <div>
+              <h3 className="text-sm font-semibold">Connect to Base</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">Connect your wallet. We securely map to the Base network for low gas fees.</p>
+            </div>
+          </div>
+          <div className="p-3 rounded-xl border bg-card text-card-foreground shadow-sm flex items-start space-x-3">
+            <div className="h-6 w-6 shrink-0 bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center font-bold text-xs mt-0.5">2</div>
+            <div>
+              <h3 className="text-sm font-semibold">Supply Collateral</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">Select a market and supply assets. Your collateral instantly begins earning APY.</p>
+            </div>
+          </div>
+          <div className="p-3 rounded-xl border bg-card text-card-foreground shadow-sm flex items-start space-x-3">
+            <div className="h-6 w-6 shrink-0 bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center font-bold text-xs mt-0.5">3</div>
+            <div>
+              <h3 className="text-sm font-semibold">Borrow Assets</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">Take out a USDC loan against your collateral. Always monitor your Health Factor!</p>
+            </div>
+          </div>
+          <div className="p-3 rounded-xl border bg-card text-card-foreground shadow-sm flex items-start space-x-3">
+            <div className="h-6 w-6 shrink-0 bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center font-bold text-xs mt-0.5">4</div>
+            <div>
+              <h3 className="text-sm font-semibold">Repay & Withdraw</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">Clear your debt using the 100% Repay button, then withdraw your original collateral.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* RESTORED: Branding in Footer */}
       <footer className="mt-8 pt-6 border-t border-muted pb-4 flex flex-col items-center space-y-4">
         <TipJar />
         <p className="text-[10px] text-muted-foreground text-center px-4">
           DeFi involves risk. Not financial advice.<br/>
-          © {new Date().getFullYear()} SimpleBTC.
+          © {new Date().getFullYear()} Simple<span className="text-blue-500">BTC</span> Borrow.
         </p>
       </footer>
     </div>
