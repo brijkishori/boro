@@ -51,6 +51,30 @@ export default function RepayFlow() {
 
   const currentAsset = ASSETS[selectedAsset];
 
+  // --- NEW: Live price fetcher for the Vault USD calculation ---
+  const [realTimePrices, setRealTimePrices] = useState({ cbBTC: 64000, cbETH: 3100 });
+  
+  useEffect(() => {
+    const fetchPrices = async () => {
+      try {
+        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=coinbase-wrapped-btc,coinbase-wrapped-staked-eth&vs_currencies=usd');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && data['coinbase-wrapped-btc']) {
+          setRealTimePrices({
+            cbBTC: data['coinbase-wrapped-btc']?.usd || realTimePrices.cbBTC,
+            cbETH: data['coinbase-wrapped-staked-eth']?.usd || realTimePrices.cbETH
+          });
+        }
+      } catch (e) {}
+    };
+    fetchPrices();
+    const interval = setInterval(fetchPrices, 30000); 
+    return () => clearInterval(interval);
+  }, [realTimePrices]);
+
+  const currentPrice = selectedAsset === 'cbBTC' ? realTimePrices.cbBTC : realTimePrices.cbETH;
+
   const [marketParams, setMarketParams] = useState({ id: '0x0', oracle: '0x0', irm: '0x0', lltv: 0n });
   const [isFetchingMarket, setIsFetchingMarket] = useState(false);
 
@@ -163,11 +187,12 @@ export default function RepayFlow() {
   return (
     <div className="space-y-4">
       <Card className="shadow border-muted">
-        <CardHeader className="p-4 pb-2"><CardTitle className="text-sm">1. Repay USDC Loan</CardTitle></CardHeader>
         <CardContent className="p-4 space-y-4">
-          <div className="flex justify-between items-center text-xs font-medium">
-            <span className="text-muted-foreground">Wallet: <span className="text-foreground font-bold">{usdcBalance.toFixed(2)}</span></span>
-            <span className="text-muted-foreground">Debt: <span className="text-red-600 dark:text-red-400 font-bold">{exactDebtUSDC.toFixed(4)}</span></span>
+          
+          {/* RESTORED: USDC Labels for Wallet and Debt */}
+          <div className="flex justify-between items-center text-xs font-medium mb-1">
+            <span className="text-muted-foreground">Wallet: <span className="text-foreground font-bold">{usdcBalance.toFixed(2)} USDC</span></span>
+            <span className="text-muted-foreground">Debt: <span className="text-red-600 dark:text-red-400 font-bold">{exactDebtUSDC.toFixed(4)} USDC</span></span>
           </div>
           
           <div className="flex space-x-2">
@@ -194,11 +219,14 @@ export default function RepayFlow() {
       </Card>
 
       <Card className="shadow border-muted">
-        <CardHeader className="p-4 pb-2"><CardTitle className="text-sm">2. Withdraw Collateral</CardTitle></CardHeader>
         <CardContent className="p-4 space-y-4">
-          <div className="flex justify-between items-center text-xs font-medium">
-            <span className="text-muted-foreground">In Vault:</span>
-            <span className="text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 px-2 py-0.5 rounded font-bold">{collateralAmount.toFixed(4)} {selectedAsset}</span>
+          
+          {/* RESTORED: Vault USD Equivalent Label */}
+          <div className="flex justify-between items-center mb-1">
+            <span className="text-sm font-semibold">2. Withdraw {selectedAsset}</span>
+            <span className="text-[10px] font-bold bg-muted px-2 py-1 rounded text-muted-foreground truncate max-w-[180px]">
+              Vault: {collateralAmount.toFixed(4)} {selectedAsset} (${(collateralAmount * currentPrice).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})})
+            </span>
           </div>
           
           <div className="flex space-x-2">
