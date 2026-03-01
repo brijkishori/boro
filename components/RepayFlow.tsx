@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useAccount, useReadContracts, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { useQueryClient } from '@tanstack/react-query'; 
 import { formatUnits, parseUnits, maxUint256 } from 'viem';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -30,8 +31,13 @@ const NETWORK_CONFIG = {
 
 const MORPHO_BLUE_ADDRESS = '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb';
 
+const safeParseUnits = (value: string, decimals: number) => {
+  try { return parseUnits(value || '0', decimals); } catch { return 0n; }
+};
+
 export default function RepayFlow() {
   const { address, chain } = useAccount();
+  const queryClient = useQueryClient(); 
   const safeAddress = address || '0x0000000000000000000000000000000000000000';
   const chainId = chain?.id === 84532 ? 84532 : 8453;
   const config = NETWORK_CONFIG[chainId as keyof typeof NETWORK_CONFIG];
@@ -46,12 +52,12 @@ export default function RepayFlow() {
   const [isMaxWithdraw, setIsMaxWithdraw] = useState(false);
   const [showInstructions, setShowInstructions] = useState(false);
 
+  const [optimisticZeroDebt, setOptimisticZeroDebt] = useState(false);
   const [optimisticApproval, setOptimisticApproval] = useState(false);
   const [lastAction, setLastAction] = useState<string>('');
 
   const currentAsset = ASSETS[selectedAsset];
 
-  // --- NEW: Live price fetcher for the Vault USD calculation ---
   const [realTimePrices, setRealTimePrices] = useState({ cbBTC: 64000, cbETH: 3100 });
   
   useEffect(() => {
@@ -126,16 +132,20 @@ export default function RepayFlow() {
   const contractData = rawContractData || prevContractData.current;
   const positionData = rawPositionData || prevPositionData.current;
 
-  const usdcBalance = contractData?.[0]?.result !== undefined ? Number(formatUnits(contractData[0].result as bigint, 6)) : 0;
+  const usdcBalanceRaw = contractData?.[0]?.result !== undefined ? (contractData[0].result as bigint) : 0n;
+  const usdcBalance = Number(formatUnits(usdcBalanceRaw, 6));
   const usdcAllowance = contractData?.[1]?.result !== undefined ? (contractData[1].result as bigint) : 0n;
 
   const marketData = contractData?.[2]?.result as any;
   const totalBorrowAssets = marketData?.[2] || 0n;
   const totalBorrowShares = marketData?.[3] || 0n;
-  const borrowShares = positionData?.[1] || 0n;
+
+  const borrowShares = optimisticZeroDebt ? 0n : (positionData?.[1] || 0n);
 
   let exactDebtAssets = 0n;
-  if (totalBorrowShares > 0n) {
+  if (optimisticZeroDebt) {
+    exactDebtAssets = 0n;
+  } else if (totalBorrowShares > 0n) {
     const VIRTUAL_SHARES = 1000000n; 
     const VIRTUAL_ASSETS = 1000000n; 
     const numerator = borrowShares * (totalBorrowAssets + VIRTUAL_ASSETS);
@@ -145,29 +155,69 @@ export default function RepayFlow() {
 
   const exactDebtUSDC = Number(formatUnits(exactDebtAssets, 6));
   const rawCollateral = positionData?.[2] || 0n;
-  const collateralAmount = positionData?.[2] ? Number(formatUnits(positionData[2], currentAsset.decimals)) : 0;
+  const collateralAmount = rawCollateral ? Number(formatUnits(rawCollateral, currentAsset.decimals)) : 0;
 
-  const repayAmountRaw = parseUnits(repayAmount || '0', 6);
+  // --- NEW: THE "STICKY MAX" SYNCHRONIZERS ---
+  // If the user selected MAX, auto-update the input field when the blockchain data refreshes
+  // This prevents the field from going stale or clearing out after an Approval.
+  useEffect(() => {
+    if (isMaxRepay && exactDebtAssets > 0n) {
+      setRepayAmount(formatUnits(exactDebtAssets, 6));
+    }
+  }, [exactDebtAssets, isMaxRepay]);
+
+  useEffect(() => {
+    if (isMaxWithdraw && rawCollateral > 0n) {
+      setWithdrawAmount(formatUnits(rawCollateral, currentAsset.decimals));
+    }
+  }, [rawCollateral, isMaxWithdraw, currentAsset.decimals]);
+  // ---------------------------------------------
+
+  const repayAmountRaw = safeParseUnits(repayAmount, 6);
+  const withdrawAmountRaw = safeParseUnits(withdrawAmount, currentAsset.decimals);
+
   const needsApproval = repayAmountRaw > 0n && usdcAllowance < repayAmountRaw && !optimisticApproval;
-  const isRepayExceedingWallet = Number(repayAmount || 0) > usdcBalance;
-  const isWithdrawExceedingVault = Number(withdrawAmount || 0) > collateralAmount;
+  
+  const isRepayExceedingWallet = isMaxRepay ? exactDebtAssets > usdcBalanceRaw : repayAmountRaw > usdcBalanceRaw;
+  const isWithdrawExceedingVault = isMaxWithdraw ? false : withdrawAmountRaw > rawCollateral;
 
   const { writeContract: write, data: hash, isPending: isWalletPromptOpen, reset: resetTx } = useWriteContract();
-  const { isLoading: isConfirming, isSuccess: isTxSuccess } = useWaitForTransactionReceipt({ hash });
+  const { isLoading: isConfirming, isSuccess: isTxSuccess, isError: isTxError } = useWaitForTransactionReceipt({ hash });
   
   const isTxBusy = isWalletPromptOpen || isConfirming;
 
   useEffect(() => {
     if (isTxSuccess) {
-      if (lastAction === 'approve') setOptimisticApproval(true);
-      else if (lastAction === 'repay') { setRepayAmount(''); setIsMaxRepay(false); }
-      else if (lastAction === 'withdraw') { setWithdrawAmount(''); setIsMaxWithdraw(false); }
+      if (lastAction === 'approve') {
+        setOptimisticApproval(true);
+        toast.success("Approval Confirmed! Now click Repay."); 
+      }
+      else if (lastAction === 'repay') { 
+        setRepayAmount(''); 
+        if (isMaxRepay || repayAmountRaw >= exactDebtAssets) {
+          setOptimisticZeroDebt(true);
+          setTimeout(() => setOptimisticZeroDebt(false), 15000); 
+        }
+        setIsMaxRepay(false); 
+        toast.success("Repayment Success! Debt Cleared.");
+      }
+      else if (lastAction === 'withdraw') { 
+        setWithdrawAmount(''); 
+        setIsMaxWithdraw(false); 
+        toast.success("Withdrawal Successful!");
+      }
+      
+      queryClient.invalidateQueries();
       refetchReads(); refetchPosition();
-      setTimeout(() => { refetchReads(); refetchPosition(); }, 4000);
-      toast.success("Transaction Confirmed!");
+      setTimeout(() => { queryClient.invalidateQueries(); refetchReads(); refetchPosition(); }, 4000);
       resetTx();
     }
-  }, [isTxSuccess, refetchReads, refetchPosition, resetTx, lastAction]);
+
+    if (isTxError) {
+      toast.error("Transaction reverted or was rejected by the network.");
+      resetTx();
+    }
+  }, [isTxSuccess, isTxError, refetchReads, refetchPosition, resetTx, lastAction, queryClient, isMaxRepay, repayAmountRaw, exactDebtAssets]);
 
   const handleAction = (type: 'approve' | 'repay' | 'withdraw') => {
     setLastAction(type);
@@ -179,7 +229,7 @@ export default function RepayFlow() {
       else write({ address: MORPHO_BLUE_ADDRESS, abi: morphoAbi, functionName: 'repay', args: [market, repayAmountRaw, 0n, safeAddress, '0x'] });
     } 
     else {
-      const safeWithdrawAssets = isMaxWithdraw ? rawCollateral : parseUnits(withdrawAmount || '0', currentAsset.decimals);
+      const safeWithdrawAssets = isMaxWithdraw ? rawCollateral : withdrawAmountRaw;
       write({ address: MORPHO_BLUE_ADDRESS, abi: morphoAbi, functionName: 'withdrawCollateral', args: [market, safeWithdrawAssets, safeAddress, safeAddress] });
     }
   };
@@ -189,7 +239,6 @@ export default function RepayFlow() {
       <Card className="shadow border-muted">
         <CardContent className="p-4 space-y-4">
           
-          {/* RESTORED: USDC Labels for Wallet and Debt */}
           <div className="flex justify-between items-center text-xs font-medium mb-1">
             <span className="text-muted-foreground">Wallet: <span className="text-foreground font-bold">{usdcBalance.toFixed(2)} USDC</span></span>
             <span className="text-muted-foreground">Debt: <span className="text-red-600 dark:text-red-400 font-bold">{exactDebtUSDC.toFixed(4)} USDC</span></span>
@@ -206,7 +255,7 @@ export default function RepayFlow() {
 
           <div className="pt-2">
             {isRepayExceedingWallet ? (
-               <Button className="w-full h-12 text-sm font-bold text-white bg-red-500 cursor-not-allowed" disabled>Insufficient USDC</Button>
+               <Button className="w-full h-12 text-sm font-bold text-white bg-red-500 cursor-not-allowed" disabled>Need {exactDebtUSDC.toFixed(6)} USDC</Button>
             ) : needsApproval ? (
                <Button className="w-full h-12 text-sm font-bold bg-indigo-600 text-white" disabled={isTxBusy || exactDebtAssets === 0n} onClick={() => handleAction('approve')}>{isTxBusy ? 'Confirming...' : 'Approve USDC'}</Button>
             ) : (
@@ -221,7 +270,6 @@ export default function RepayFlow() {
       <Card className="shadow border-muted">
         <CardContent className="p-4 space-y-4">
           
-          {/* RESTORED: Vault USD Equivalent Label */}
           <div className="flex justify-between items-center mb-1">
             <span className="text-sm font-semibold">2. Withdraw {selectedAsset}</span>
             <span className="text-[10px] font-bold bg-muted px-2 py-1 rounded text-muted-foreground truncate max-w-[180px]">
@@ -239,9 +287,9 @@ export default function RepayFlow() {
 
           <div className="flex gap-2">
             {[25, 50, 75].map((pct) => (
-              <Button key={pct} variant="outline" size="sm" className="flex-1 text-xs h-8 font-bold" disabled={rawCollateral === 0n} onClick={() => { setWithdrawAmount(((collateralAmount * pct) / 100).toFixed(8)); setIsMaxWithdraw(false); }}>{pct}%</Button>
+              <Button key={pct} variant="outline" size="sm" className="flex-1 text-xs h-8 font-bold" disabled={rawCollateral === 0n} onClick={() => { setWithdrawAmount(formatUnits((rawCollateral * BigInt(pct)) / 100n, currentAsset.decimals)); setIsMaxWithdraw(false); }}>{pct}%</Button>
             ))}
-            <Button variant="outline" size="sm" className="flex-1 text-xs h-8 font-bold bg-muted" disabled={rawCollateral === 0n} onClick={() => { setWithdrawAmount(collateralAmount.toFixed(8)); setIsMaxWithdraw(true); }}>MAX</Button>
+            <Button variant="outline" size="sm" className="flex-1 text-xs h-8 font-bold bg-muted" disabled={rawCollateral === 0n} onClick={() => { setWithdrawAmount(formatUnits(rawCollateral, currentAsset.decimals)); setIsMaxWithdraw(true); }}>MAX</Button>
           </div>
 
           <div className="pt-2">
