@@ -13,7 +13,9 @@ export async function generateMetadata(): Promise<Metadata> {
     title: 'Simple BTC Borrow',
     description: 'A seamless, transparent borrowing experience.',
     other: {
-      'base:app_id': '69a329f10d00a968ea9a3a71', 
+      /*'base:app_id': '69a329f10d00a968ea9a3a71',*/
+		'base:app_id': '69cc9ee01aacdcc17b25514d',
+	  
       'fc:miniapp': JSON.stringify({
         version: 'next',
         imageUrl: `${appUrl}/icon.png`,
