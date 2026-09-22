@@ -15,7 +15,7 @@ export default function FAQPage() {
   const faqs = [
     {
       question: <>What is <strong className="text-foreground">Simple<span className="text-blue-500">BTC</span> Borrow</strong>?</>,
-      answer: <><strong className="text-foreground">Simple<span className="text-blue-500">BTC</span> Borrow</strong> is a decentralized interface that allows you to supply crypto assets (like cbBTC or WETH) as collateral to borrow USDC. It is built on top of the Morpho Blue protocol, interacting directly with their highly efficient, immutable smart contracts on the Base network.</>
+      answer: <><strong className="text-foreground">Simple<span className="text-blue-500">BTC</span> Borrow</strong> compares Morpho Blue and Aave V3 on Ethereum and Base, then sends your transaction to the market you select. Borrow mode highlights the lowest USDC APR. Lend mode highlights the highest BTC supply APY. Direct BTC uses tBTC. cbBTC remains available.</>
     },
     {
       question: "How is my Health Factor calculated?",
@@ -27,11 +27,11 @@ export default function FAQPage() {
     },
     {
       question: "Who controls my funds?",
-      answer: <><strong className="text-foreground">Simple<span className="text-blue-500">BTC</span> Borrow</strong> is a non-custodial interface. We do not hold, control, or have access to your assets at any time. All deposits and loans are handled entirely by the open-source Morpho smart contracts on the blockchain.</>
+      answer: <><strong className="text-foreground">Simple<span className="text-blue-500">BTC</span> Borrow</strong> is a non-custodial interface. We do not hold, control, or have access to your assets. Bitcoin balances are read from the public network. Lending and borrowing execute in your wallet against Morpho or Aave.</>
     },
     {
       question: "Are there any fees?",
-      answer: "This interface does not charge any additional platform fees. You are only responsible for the standard Base network gas fees to execute transactions, and the dynamic borrowing interest rate defined by the specific Morpho market you are interacting with."
+      answer: "This interface does not charge platform fees. You pay network gas plus the interest rate of the Morpho or Aave market you select."
     },
     {
       question: "How do I close my loan completely?",
@@ -81,16 +81,12 @@ export default function FAQPage() {
       <div className="mt-12 p-6 bg-muted/40 rounded-xl border border-muted text-center space-y-4">
         <h3 className="font-semibold text-foreground">Still have questions?</h3>
         <p className="text-sm text-muted-foreground">
-          For technical deep-dives into how the underlying smart contracts work, please refer to the official Morpho documentation.
+          Protocol documentation lives with Morpho and Aave. This interface only prepares the transaction your wallet signs.
         </p>
-        <a 
-          href="https://docs.morpho.org/" 
-          target="_blank" 
-          rel="noreferrer"
-          className="inline-block mt-2 text-sm font-bold text-blue-600 dark:text-blue-400 hover:underline"
-        >
-          Read Morpho Docs &rarr;
-        </a>
+        <div className="flex justify-center gap-4">
+          <a href="https://docs.morpho.org/" target="_blank" rel="noreferrer" className="text-sm font-bold text-blue-600 dark:text-blue-400 hover:underline">Morpho docs</a>
+          <a href="https://aave.com/docs" target="_blank" rel="noreferrer" className="text-sm font-bold text-blue-600 dark:text-blue-400 hover:underline">Aave docs</a>
+        </div>
       </div>
 
     </div>

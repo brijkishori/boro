@@ -1,45 +1,58 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useSendTransaction, useWaitForTransactionReceipt } from 'wagmi';
+import { useState } from 'react';
+import { useAccount, useSendTransaction } from 'wagmi';
+import { waitForTransactionReceipt } from 'wagmi/actions';
+import { base } from 'wagmi/chains';
+import { config } from '@/lib/config';
 import { parseEther } from 'viem';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { Heart } from 'lucide-react';
+import { useNetworkSwitch } from '@/components/useNetworkSwitch';
 
-// ⚠️ REPLACE THIS WITH YOUR ACTUAL BASE WALLET ADDRESS ⚠️
 const CREATOR_ADDRESS = '0xA6f97cD0f030E8eB8201c6c2406fe9BFBacE7300';
 
 export default function TipJar() {
+  const { chain, isConnected } = useAccount();
+  const { switchTo, pendingChainId } = useNetworkSwitch();
   const [isOpen, setIsOpen] = useState(false);
   const [amount, setAmount] = useState('0.001');
+  const [isConfirming, setIsConfirming] = useState(false);
+  const { sendTransactionAsync, isPending, reset } = useSendTransaction();
 
-  // Wagmi hooks for sending standard native ETH transactions
-  const { sendTransaction, data: hash, isPending, reset } = useSendTransaction();
-  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
-
-  useEffect(() => {
-    if (isSuccess) {
-      toast.success("Thank you so much for the tip! 💙");
-      setIsOpen(false);
-      reset(); // Resets the hook state for future tips
+  async function handleTip() {
+    if (chain?.id !== base.id && !(await switchTo(base.id))) return;
+    try {
+      const txHash = await sendTransactionAsync({ to: CREATOR_ADDRESS, value: parseEther(amount), chainId: base.id });
+      setIsConfirming(true);
+      toast.promise(
+        waitForTransactionReceipt(config, { hash: txHash, chainId: base.id })
+          .then((receipt) => {
+            if (receipt.status !== 'success') throw new Error('reverted');
+          })
+          .finally(() => setIsConfirming(false)),
+        {
+          loading: 'Sending tip…',
+          success: () => {
+            setIsOpen(false);
+            reset();
+            return 'Thank you so much for the tip!';
+          },
+          error: 'The tip reverted.',
+        },
+      );
+    } catch {
+      toast.error('The tip was cancelled.');
     }
-  }, [isSuccess, reset]);
+  }
 
-  const handleTip = () => {
-    sendTransaction({
-      to: CREATOR_ADDRESS,
-      value: parseEther(amount),
-    });
-  };
-
-  // Default collapsed state
   if (!isOpen) {
     return (
-      <Button 
-        variant="outline" 
-        size="sm" 
-        onClick={() => setIsOpen(true)} 
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setIsOpen(true)}
         className="flex items-center gap-2 font-medium border-pink-200 dark:border-pink-500/30 hover:border-pink-300 hover:bg-pink-50 dark:hover:bg-pink-500/10 transition-colors"
       >
         <Heart className="w-4 h-4 text-pink-500" />
@@ -48,11 +61,10 @@ export default function TipJar() {
     );
   }
 
-  // Expanded state with dark mode UI polish
   return (
     <div className="flex flex-wrap items-center gap-2 bg-muted/40 dark:bg-muted/10 p-2 rounded-lg border border-pink-100 dark:border-pink-500/30 shadow-sm transition-all">
-      <span className="text-xs font-bold text-muted-foreground ml-1">Tip (ETH):</span>
-      
+      <span className="text-xs font-bold text-muted-foreground ml-1">Tip (ETH on Base):</span>
+
       <div className="flex gap-1">
         {['0.001', '0.005', '0.01'].map((val) => (
           <Button
@@ -70,16 +82,16 @@ export default function TipJar() {
       <Button
         size="sm"
         className="h-8 bg-blue-600 hover:bg-blue-700 text-white font-bold ml-1"
-        disabled={isPending || isConfirming}
-        onClick={handleTip}
+        disabled={!isConnected || isPending || isConfirming || pendingChainId !== null}
+        onClick={() => void handleTip()}
       >
-        {isPending ? 'Confirming...' : isConfirming ? 'Sending...' : 'Send Tip'}
+        {!isConnected ? 'Connect a wallet' : isPending ? 'Confirm in wallet…' : isConfirming ? 'Sending…' : 'Send Tip'}
       </Button>
-      
-      <Button 
-        variant="ghost" 
-        size="sm" 
-        className="h-8 px-2 text-xs font-medium text-muted-foreground hover:text-foreground" 
+
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-8 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
         onClick={() => setIsOpen(false)}
         disabled={isPending || isConfirming}
       >

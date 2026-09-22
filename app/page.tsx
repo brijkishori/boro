@@ -1,160 +1,217 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useAccount, useConnect } from 'wagmi';
+import sdk from '@farcaster/frame-sdk';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import BorrowFlow from '@/components/BorrowFlow';
+import LendFlow from '@/components/LendFlow';
 import RepayFlow from '@/components/RepayFlow';
-import TipJar from '@/components/TipJar'; 
-import { useAccount, useConnect } from 'wagmi'; 
-import sdk from '@farcaster/frame-sdk'; 
+import FeeHistory from '@/components/FeeHistory';
+import PortfolioCard from '@/components/PortfolioCard';
+import MarketGuidance from '@/components/MarketGuidance';
+import QuoteBoard from '@/components/QuoteBoard';
+import BtcNetworkPanel from '@/components/BtcNetworkPanel';
+import CbBtcConvert from '@/components/CbBtcConvert';
+import TipJar from '@/components/TipJar';
+import { useRates } from '@/components/useRates';
+import { formatApr, formatUsd } from '@/lib/amount';
+import { isChainId, matchesAssetFilter, rankVenues, rateAssets, suggestionFor, type AssetFilter, type ChainId, type Venue, type VenueAction } from '@/lib/protocol';
+
+type Mode = 'borrow' | 'lend' | 'repay';
 
 export default function Dashboard() {
-  const { isConnected } = useAccount();
-  const { connect, connectors, isPending } = useConnect(); 
-  
-  const [isSDKLoaded, setIsSDKLoaded] = useState(false);
-  const [activeTab, setActiveTab] = useState('borrow');
-  const [livePrices, setLivePrices] = useState({ cbBTC: 64000, cbETH: 3100 });
-
-  const [marketPrices, setMarketPrices] = useState([
-    { symbol: 'cbBTC', price: 'Loading...', change: '0.00%' },
-    { symbol: 'cbETH', price: 'Loading...', change: '0.00%' },
-    { symbol: 'USDC', price: '$1.00', change: '0.00%' },
-  ]);
+  const { isConnected, chain } = useAccount();
+  const { connectAsync, connectors } = useConnect();
+  const { payload, error, loading, refresh } = useRates();
+  const [mode, setMode] = useState<Mode>('borrow');
+  const [filter, setFilter] = useState<AssetFilter>('all');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pinned, setPinned] = useState(false);
+  const [network, setNetwork] = useState<ChainId | 'all' | 'wallet'>('wallet');
+  const started = useRef(false);
 
   useEffect(() => {
-    const initFrame = async () => {
-      try {
-        const farcasterConnector = connectors.find((c) => c.id === 'farcaster');
-        if (farcasterConnector && !isConnected) connect({ connector: farcasterConnector });
-        setTimeout(() => { sdk.actions.ready(); }, 100);
-      } catch (err) {
-        sdk.actions.ready(); 
-      }
-    };
-    if (sdk && !isSDKLoaded) {
-      initFrame();
-      setIsSDKLoaded(true);
+    if (started.current) return;
+    started.current = true;
+    const farcaster = connectors.find((connector) => connector.id === 'farcaster');
+    if (connectors.length === 0) {
+      started.current = false;
+      return;
     }
-  }, [isSDKLoaded, connectors, isConnected, connect]);
+    if (farcaster && !isConnected) {
+      void connectAsync({ connector: farcaster }).catch(() => {
+        // Outside a Farcaster frame this connector has nothing to attach to.
+      });
+    }
+    try {
+      void sdk.actions.ready();
+    } catch {
+      // The Farcaster frame SDK is a no-op outside that client.
+    }
+  }, [connectors, connectAsync, isConnected]);
 
-  useEffect(() => {
-    const fetchPrices = async () => {
-      try {
-        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=coinbase-wrapped-btc,coinbase-wrapped-staked-eth&vs_currencies=usd&include_24hr_change=true');
-        if (!res.ok) return;
-        const data = await res.json();
-        
-        if (data && data['coinbase-wrapped-btc']) {
-           setLivePrices({ cbBTC: data['coinbase-wrapped-btc'].usd, cbETH: data['coinbase-wrapped-staked-eth'].usd });
-           setMarketPrices([
-             { symbol: 'cbBTC', price: `$${data['coinbase-wrapped-btc'].usd.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`, change: `${data['coinbase-wrapped-btc'].usd_24h_change > 0 ? '+' : ''}${data['coinbase-wrapped-btc'].usd_24h_change.toFixed(2)}%` },
-             { symbol: 'cbETH', price: `$${data['coinbase-wrapped-staked-eth'].usd.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`, change: `${data['coinbase-wrapped-staked-eth'].usd_24h_change > 0 ? '+' : ''}${data['coinbase-wrapped-staked-eth'].usd_24h_change.toFixed(2)}%` },
-             { symbol: 'USDC', price: '$1.00', change: '0.00%' },
-           ]);
-        }
-      } catch (error) {}
-    };
-    fetchPrices();
-    const interval = setInterval(fetchPrices, 30000); 
-    return () => clearInterval(interval);
-  }, []);
-
-  if (!isConnected) {
-    return (
-      <div className="flex flex-col items-center justify-center mt-20 space-y-6 px-4">
-        {isPending ? (
-          <div className="flex flex-col items-center space-y-4">
-            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-            <h2 className="text-xl font-semibold animate-pulse text-muted-foreground">Connecting...</h2>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center space-y-4 text-center">
-            <h2 className="text-xl font-semibold">Welcome to SimpleBTC Borrow</h2>
-            <p className="text-sm text-muted-foreground">Please connect your wallet above.</p>
-          </div>
-        )}
-      </div>
+  const action: VenueAction = mode === 'lend' ? 'lend' : 'borrow';
+  const connectedChainId = chain?.id ?? 0;
+  const walletChainId = isConnected && isChainId(connectedChainId) ? connectedChainId : null;
+  const networkView: ChainId | 'all' = network === 'wallet' ? (walletChainId ?? 'all') : network;
+  const allForAction = useMemo(() => {
+    return rankVenues(
+      (payload?.venues ?? []).filter((venue) => venue.action === action && (networkView === 'all' || venue.chainId === networkView)),
+      action,
     );
+  }, [payload, action, networkView]);
+  const ranked = useMemo(() => allForAction.filter((venue) => matchesAssetFilter(venue, filter)), [allForAction, filter]);
+  const ratings = useMemo(() => rateAssets(allForAction, action), [allForAction, action]);
+  const suggestion = useMemo(() => suggestionFor(ranked, action), [ranked, action]);
+  const best = suggestion.venue;
+  const suggested = mode === 'borrow' && suggestion.pickedForConfidence;
+  const pinnedVenue = pinned ? ranked.find((venue) => venue.id === selectedId) ?? null : null;
+  const selected = pinnedVenue ?? best;
+  const btcPrice = payload?.btcPriceUsd ?? 0;
+  const networkOptions: { id: ChainId | 'all'; label: string }[] = [
+    { id: 8453, label: 'Base' },
+    { id: 1, label: 'Ethereum' },
+    { id: 'all', label: 'All networks' },
+  ];
+
+  function chooseVenue(id: string) {
+    setPinned(true);
+    setSelectedId(id);
+  }
+
+  function openPosition(venue: Venue, next: 'repay' | 'lend') {
+    setNetwork(venue.chainId === walletChainId ? 'wallet' : venue.chainId);
+    setFilter('all');
+    setMode(next);
+    chooseVenue(venue.id);
   }
 
   return (
     <div className="space-y-4">
-      {/* Mobile Horizontal Ticker for Prices */}
-      <div className="flex overflow-x-auto gap-3 pb-2 snap-x hide-scrollbar">
-        {marketPrices.map((asset) => (
-          <Card key={asset.symbol} className="min-w-[140px] snap-center shrink-0 bg-muted/30 dark:bg-muted/10">
-            <CardContent className="p-3">
-              <span className="text-xs text-muted-foreground font-medium">{asset.symbol}</span>
-              <div className="flex justify-between items-baseline mt-1">
-                <span className="text-base font-bold">{asset.price}</span>
-                <span className={`text-[10px] font-semibold ml-2 ${asset.change.startsWith('+') ? 'text-green-500' : asset.change === '0.00%' ? 'text-muted-foreground' : 'text-red-500'}`}>
-                  {asset.change}
-                </span>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+      <PortfolioCard venues={payload?.venues ?? []} btcPrice={btcPrice} onOpen={openPosition} />
+      <div className="grid grid-cols-2 gap-3">
+        <Card>
+          <CardContent className="p-3">
+            <p className="text-[10px] font-semibold uppercase text-muted-foreground">Bitcoin</p>
+            <p className="text-lg font-bold">{btcPrice > 0 ? formatUsd(btcPrice) : 'Loading...'}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-3">
+            <p className="text-[10px] font-semibold uppercase text-muted-foreground">{mode === 'lend' ? 'Best supply APY' : suggested ? 'Suggested APR' : 'Lowest borrow APR'}</p>
+            <p className="text-lg font-bold">{best ? formatApr(mode === 'lend' ? best.supplyApr : best.borrowApr) : '—'}</p>
+            {suggested && suggestion.anchor && <p className="text-[10px] text-muted-foreground">Cheapest deep pool {formatApr(suggestion.anchor.borrowApr)}</p>}
+          </CardContent>
+        </Card>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid w-full grid-cols-2 mb-4 h-12">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-muted-foreground">
+          {loading ? 'Loading live markets...' : payload ? `Updated ${new Date(payload.fetchedAt).toLocaleTimeString()}` : 'Rates unavailable'}
+        </p>
+        <Button type="button" variant="outline" size="sm" onClick={() => void refresh()}>Refresh</Button>
+      </div>
+      {error && <p className="text-xs font-medium text-red-500">{error}</p>}
+      {payload?.warnings.map((warning) => (
+        <p key={warning} className="text-xs text-orange-500">{warning}</p>
+      ))}
+
+      <div className="space-y-1.5">
+        <p className="text-[10px] font-semibold uppercase text-muted-foreground">Pools on</p>
+        <div className="grid grid-cols-3 gap-1 rounded-lg bg-muted p-1">
+          {networkOptions.map((option) => (
+            <button
+              key={String(option.id)}
+              type="button"
+              aria-pressed={networkView === option.id}
+              className={`rounded-md px-2 py-1.5 text-xs font-semibold transition ${networkView === option.id ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+              onClick={() => {
+                setPinned(false);
+                setNetwork(option.id === walletChainId ? 'wallet' : option.id);
+              }}
+            >
+              {option.label}{option.id === walletChainId ? ' · wallet' : ''}
+            </button>
+          ))}
+        </div>
+        {walletChainId && networkView !== 'all' && networkView !== walletChainId && (
+          <p className="text-[11px] text-muted-foreground">Your wallet is on {walletChainId === 1 ? 'Ethereum' : 'Base'}. These pools need a network switch before you can sign.</p>
+        )}
+      </div>
+
+      <MarketGuidance
+        action={action}
+        ratings={ratings}
+        suggestion={suggestion}
+        onPick={(venue) => {
+          if (venue.assetSymbol === 'tBTC' || venue.assetSymbol === 'WBTC' || venue.assetSymbol === 'cbBTC') {
+            setFilter(venue.assetSymbol);
+          }
+          chooseVenue(venue.id);
+        }}
+      />
+      <QuoteBoard
+        action={action}
+        venues={ranked}
+        selectedId={selected?.id ?? null}
+        recommendedId={best?.id ?? null}
+        filter={filter}
+        onFilter={(next) => {
+          setPinned(false);
+          setFilter(next);
+        }}
+        onSelect={chooseVenue}
+      />
+
+      <Tabs value={mode} onValueChange={(value) => setMode(value as Mode)}>
+        <TabsList className="mb-4 grid h-12 w-full grid-cols-3">
           <TabsTrigger value="borrow" className="text-sm font-bold">Borrow</TabsTrigger>
+          <TabsTrigger value="lend" className="text-sm font-bold">Lend</TabsTrigger>
           <TabsTrigger value="repay" className="text-sm font-bold">Repay</TabsTrigger>
         </TabsList>
-        
-        <div className={activeTab === 'borrow' ? 'block' : 'hidden'}>
-          <BorrowFlow hideZeroBalances={true} livePrices={livePrices} />
-        </div>
-        
-        <div className={activeTab === 'repay' ? 'block' : 'hidden'}>
-          <RepayFlow />
-        </div>
       </Tabs>
 
-      {/* RESTORED: Compact Mobile How It Works Section */}
-      <section id="how-it-works" className="mt-8 pt-8 border-t border-muted">
-        <h2 className="text-lg font-bold mb-4 text-center">
-          How to Use Simple<span className="text-blue-500">BTC</span>
-        </h2>
-        <div className="grid grid-cols-1 gap-3">
-          <div className="p-3 rounded-xl border bg-card text-card-foreground shadow-sm flex items-start space-x-3">
-            <div className="h-6 w-6 shrink-0 bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center font-bold text-xs mt-0.5">1</div>
-            <div>
-              <h3 className="text-sm font-semibold">Connect to Base</h3>
-              <p className="text-xs text-muted-foreground mt-0.5">Connect your wallet. We securely map to the Base network for low gas fees.</p>
+      {mode === 'borrow' && <BorrowFlow key={selected?.id ?? 'borrow'} quote={selected} fetchedAt={payload?.fetchedAt ?? 0} venues={ranked} onSelect={chooseVenue} />}
+      {mode === 'lend' && <LendFlow key={selected?.id ?? 'lend'} quote={selected} fetchedAt={payload?.fetchedAt ?? 0} venues={ranked} onSelect={chooseVenue} />}
+      {mode === 'repay' && <RepayFlow key={selected?.id ?? 'repay'} quote={selected} venues={ranked} onSelect={chooseVenue} />}
+
+      <FeeHistory />
+
+      <details className="rounded-xl border bg-card px-4 py-3">
+        <summary className="cursor-pointer text-sm font-semibold">Bitcoin balance and cbBTC conversion</summary>
+        <div className="mt-3 space-y-3">
+          <BtcNetworkPanel btcPriceUsd={btcPrice} />
+          <CbBtcConvert />
+        </div>
+      </details>
+
+      <section id="how-it-works" className="mt-8 border-t border-muted pt-8">
+        <h2 className="mb-4 text-center text-lg font-bold">How to use Simple<span className="text-blue-500">BTC</span></h2>
+        <div className="grid gap-3">
+          {[
+            ['Read Bitcoin, or connect an EVM wallet', 'The Bitcoin panel reads a mainnet balance. Lending and borrowing execute from your Ethereum or Base wallet.'],
+            ['Compare Morpho and Aave', 'Borrow mode suggests a deep, established pool when its APR is within 0.25% of the cheapest. Lend mode highlights the highest BTC supply APY. Direct BTC markets use tBTC.'],
+            ['Supply, then borrow inside the safety buffer', 'Transactions use the on-chain oracle or Aave account data. Borrowing is capped at 90% of the protocol maximum.'],
+            ['Repay, then withdraw', 'Repay the selected market, including interest, before collateral can be withdrawn.'],
+          ].map(([title, body], index) => (
+            <div key={title} className="flex items-start gap-3 rounded-xl border bg-card p-3 shadow-sm">
+              <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-600 dark:bg-blue-500/20 dark:text-blue-400">{index + 1}</div>
+              <div>
+                <h3 className="text-sm font-semibold">{title}</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">{body}</p>
+              </div>
             </div>
-          </div>
-          <div className="p-3 rounded-xl border bg-card text-card-foreground shadow-sm flex items-start space-x-3">
-            <div className="h-6 w-6 shrink-0 bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center font-bold text-xs mt-0.5">2</div>
-            <div>
-              <h3 className="text-sm font-semibold">Supply Collateral</h3>
-              <p className="text-xs text-muted-foreground mt-0.5">Select a market and supply assets.</p>
-            </div>
-          </div>
-          <div className="p-3 rounded-xl border bg-card text-card-foreground shadow-sm flex items-start space-x-3">
-            <div className="h-6 w-6 shrink-0 bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center font-bold text-xs mt-0.5">3</div>
-            <div>
-              <h3 className="text-sm font-semibold">Borrow Assets</h3>
-              <p className="text-xs text-muted-foreground mt-0.5">Take out a USDC loan against your collateral. Always monitor your Health Factor!</p>
-            </div>
-          </div>
-          <div className="p-3 rounded-xl border bg-card text-card-foreground shadow-sm flex items-start space-x-3">
-            <div className="h-6 w-6 shrink-0 bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded-full flex items-center justify-center font-bold text-xs mt-0.5">4</div>
-            <div>
-              <h3 className="text-sm font-semibold">Repay & Withdraw</h3>
-              <p className="text-xs text-muted-foreground mt-0.5">Clear your debt using the 100% Repay button, then withdraw your original collateral.</p>
-            </div>
-          </div>
+          ))}
         </div>
       </section>
 
-      {/* RESTORED: Branding in Footer */}
-      <footer className="mt-8 pt-6 border-t border-muted pb-4 flex flex-col items-center space-y-4">
+      <footer className="mt-8 flex flex-col items-center space-y-4 border-t border-muted pb-4 pt-6">
         <TipJar />
-        <p className="text-[10px] text-muted-foreground text-center px-4">
-          DeFi involves risk. Not financial advice.<br/>
+        <p className="px-4 text-center text-[10px] text-muted-foreground">
+          DeFi involves liquidation and smart-contract risk. Not financial advice.<br />
           © {new Date().getFullYear()} Simple<span className="text-blue-500">BTC</span> Borrow.
         </p>
       </footer>

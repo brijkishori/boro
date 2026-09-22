@@ -1,375 +1,395 @@
 'use client';
 
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { useAccount, useReadContracts, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
-import { formatUnits, parseUnits, maxUint256 } from 'viem';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
+import { useEffect, useState } from 'react';
+import { useAccount, useReadContract } from 'wagmi';
+import { formatUnits } from 'viem';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { Slider } from '@/components/ui/slider';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, ResponsiveContainer } from 'recharts';
-import { toast } from "sonner";
-import { Activity, ShieldCheck, AlertTriangle, Skull, ChevronDown, ChevronUp } from 'lucide-react'; 
+import UsdAmountField from '@/components/UsdAmountField';
+import WrongNetworkActions from '@/components/WrongNetworkActions';
+import GasNotice from '@/components/GasNotice';
+import FeeBreakdown from '@/components/FeeBreakdown';
+import CoinbaseTransferButton from '@/components/CoinbaseTransferButton';
+import { GAS_UNITS, useGasCheck } from '@/components/useGasCheck';
+import { aavePoolAbi, erc20Abi, morphoAbi, oracleAbi } from '@/lib/abi';
+import { approvalStep, formatToken, formatUsd, formatUsdExact, tokenAmountUsd, tokenPriceUsd } from '@/lib/amount';
+import {
+  MORPHO_BLUE,
+  chainLabel,
+  isChainId,
+  isVenueSafe,
+  sameAssetOnOtherChain,
+  morphoParams,
+  protocolLabel,
+  venueConfidence,
+  venueOnChain,
+  venueSpender,
+  type Venue,
+} from '@/lib/protocol';
+import { applySafetyBuffer, morphoCollateralToLoan, morphoDebtAssets, morphoMaxBorrowAssets } from '@/lib/risk';
+import { useSendTx } from './useSendTx';
 
-const erc20Abi = [
-  { name: 'balanceOf', type: 'function', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ name: 'balance', type: 'uint256' }] },
-  { name: 'approve', type: 'function', stateMutability: 'nonpayable', inputs: [{ name: 'spender', type: 'address' }, { name: 'amount', type: 'uint256' }], outputs: [{ name: '', type: 'bool' }] },
-  { name: 'allowance', type: 'function', stateMutability: 'view', inputs: [{ name: 'owner', type: 'address' }, { name: 'spender', type: 'address' }], outputs: [{ name: 'remaining', type: 'uint256' }] }
-] as const;
+const RATE_MAX_AGE_MS = 3 * 60_000;
 
-const morphoAbi = [
-  { name: 'position', type: 'function', stateMutability: 'view', inputs: [{ name: 'id', type: 'bytes32' }, { name: 'user', type: 'address' }], outputs: [{ name: 'supplyShares', type: 'uint256' }, { name: 'borrowShares', type: 'uint128' }, { name: 'collateral', type: 'uint128' }] },
-  { name: 'market', type: 'function', stateMutability: 'view', inputs: [{ name: 'id', type: 'bytes32' }], outputs: [{ name: 'totalSupplyAssets', type: 'uint128' }, { name: 'totalSupplyShares', type: 'uint128' }, { name: 'totalBorrowAssets', type: 'uint128' }, { name: 'totalBorrowShares', type: 'uint128' }, { name: 'lastUpdate', type: 'uint128' }, { name: 'fee', type: 'uint128' }] },
-  { name: 'supplyCollateral', type: 'function', stateMutability: 'nonpayable', inputs: [{ type: 'tuple', components: [{ name: 'loanToken', type: 'address' }, { name: 'collateralToken', type: 'address' }, { name: 'oracle', type: 'address' }, { name: 'irm', type: 'address' }, { name: 'lltv', type: 'uint256' }] }, { name: 'assets', type: 'uint256' }, { name: 'onBehalf', type: 'address' }, { name: 'data', type: 'bytes' }] },
-  { name: 'borrow', type: 'function', stateMutability: 'nonpayable', inputs: [{ type: 'tuple', components: [{ name: 'loanToken', type: 'address' }, { name: 'collateralToken', type: 'address' }, { name: 'oracle', type: 'address' }, { name: 'irm', type: 'address' }, { name: 'lltv', type: 'uint256' }] }, { name: 'assets', type: 'uint256' }, { name: 'shares', type: 'uint256' }, { name: 'onBehalf', type: 'address' }, { name: 'receiver', type: 'address' }] }
-] as const;
+export default function BorrowFlow({ quote, fetchedAt, venues = [], onSelect }: { quote: Venue | null; fetchedAt: number; venues?: Venue[]; onSelect?: (id: string) => void }) {
+  const { address, chain, isConnected } = useAccount();
+  const [supplyAmount, setSupplyAmount] = useState<bigint | null>(null);
+  const [borrowAmount, setBorrowAmount] = useState<bigint | null>(null);
+  const [supplyEpoch, setSupplyEpoch] = useState(0);
+  const [borrowEpoch, setBorrowEpoch] = useState(0);
+  const [drop, setDrop] = useState(0);
+  const { send, isBusy, isAwaitingWallet, confirmed } = useSendTx();
 
-const NETWORK_CONFIG = {
-  8453: { USDC: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', cbBTC: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', cbETH: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22' },
-  84532: { USDC: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', cbBTC: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', cbETH: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22' }
-};
+  const safe = quote !== null && isVenueSafe(quote) && quote.action === 'borrow';
+  const spender = safe && quote ? venueSpender(quote) : null;
+  const morpho = safe && quote?.protocol === 'morpho' ? quote.morpho : undefined;
+  const aave = safe && quote?.protocol === 'aave' ? quote.aave : undefined;
+  const enabled = Boolean(address && safe);
+  const gas = useGasCheck(quote?.chainId, GAS_UNITS.write);
+  const marketChainId = quote?.chainId;
+  const otherAsset = quote ? sameAssetOnOtherChain(quote.chainId, quote.assetSymbol) : null;
 
-const MORPHO_BLUE_ADDRESS = '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb';
-
-const generateHistoricalApyFallback = (anchorApy: number, days: number) => {
-  const data = [];
-  let currentApy = anchorApy; 
-  const today = new Date();
-  data.push({ timestamp: today.getTime(), date: today.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), apy: Number(currentApy.toFixed(2)) });
-  for (let i = 1; i <= days; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    currentApy = currentApy + (Math.random() * 0.6 - 0.3);
-    if (currentApy < 0.5) currentApy = 0.5 + Math.random(); 
-    data.push({ timestamp: d.getTime(), date: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), apy: Number(currentApy.toFixed(2)) });
-  }
-  return data.sort((a, b) => a.timestamp - b.timestamp); 
-};
-
-export default function BorrowFlow({ hideZeroBalances, livePrices }: { hideZeroBalances: boolean, livePrices: { cbBTC: number, cbETH: number } }) {
-  const { address, chain } = useAccount();
-  const safeAddress = address || '0x0000000000000000000000000000000000000000';
-  const chainId = chain?.id === 84532 ? 84532 : 8453;
-  const config = NETWORK_CONFIG[chainId as keyof typeof NETWORK_CONFIG];
-  
-  const ASSETS = { cbBTC: { address: config.cbBTC, decimals: 8, symbol: 'cbBTC' }, cbETH: { address: config.cbETH, decimals: 18, symbol: 'cbETH' } };
-
-  const [selectedAsset, setSelectedAsset] = useState<keyof typeof ASSETS>('cbBTC');
-  const [supplyUsdInput, setSupplyUsdInput] = useState<string>('');
-  const [borrowAmount, setBorrowAmount] = useState<string>('');
-  const [simulatedDrop, setSimulatedDrop] = useState<number>(0);
-  const [apyView, setApyView] = useState<'chart' | 'table'>('chart');
-  const [historyDays, setHistoryDays] = useState<number>(30); 
-  
-  // NEW: Toggle for massive charts to save vertical space
-  const [showAdvanced, setShowAdvanced] = useState(false);
-
-  const [optimisticApproval, setOptimisticApproval] = useState(false);
-  const [lastAction, setLastAction] = useState<string>('');
-
-  const currentAsset = ASSETS[selectedAsset];
-  const [realTimePrices, setRealTimePrices] = useState(livePrices);
-  
-  useEffect(() => {
-    const fetchPrices = async () => {
-      try {
-        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=coinbase-wrapped-btc,coinbase-wrapped-staked-eth&vs_currencies=usd');
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data && data['coinbase-wrapped-btc']) {
-          setRealTimePrices({
-            cbBTC: data['coinbase-wrapped-btc']?.usd || realTimePrices.cbBTC,
-            cbETH: data['coinbase-wrapped-staked-eth']?.usd || realTimePrices.cbETH
-          });
-        }
-      } catch (e) {}
-    };
-    fetchPrices();
-    const interval = setInterval(fetchPrices, 30000); 
-    return () => clearInterval(interval);
-  }, [realTimePrices]);
-
-  const [marketParams, setMarketParams] = useState({ id: '0x0', oracle: '0x0', irm: '0x0', lltv: 0n, borrowApy: 4.08 });
-  const [rawChartData, setRawChartData] = useState<any[]>(generateHistoricalApyFallback(4.08, 365));
-  const [isFetchingMarket, setIsFetchingMarket] = useState(false);
-
-  useEffect(() => {
-    const fetchMarket = async () => {
-      setIsFetchingMarket(true);
-      try {
-        const res = await fetch('https://blue-api.morpho.org/graphql', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: `query { markets(where: { chainId_in: [${chainId}], collateralAssetAddress_in: ["${currentAsset.address}"], loanAssetAddress_in: ["${config.USDC}"] }) { items { uniqueKey lltv oracleAddress irmAddress state { supplyAssets borrowApy netBorrowApy } } } }` })
-        });
-        if (!res.ok) { setIsFetchingMarket(false); return; }
-        const json = await res.json();
-        const markets = json?.data?.markets?.items;
-        
-        if (markets && markets.length > 0) {
-          const best = markets.sort((a: any, b: any) => Number(b.state.supplyAssets) - Number(a.state.supplyAssets))[0];
-          const rawNetApy = best.state.netBorrowApy !== null && best.state.netBorrowApy !== undefined ? best.state.netBorrowApy : best.state.borrowApy;
-          const liveApy = (rawNetApy || 0) * 100;
-          
-          setMarketParams({ id: best.uniqueKey, oracle: best.oracleAddress, irm: best.irmAddress, lltv: BigInt(best.lltv), borrowApy: liveApy });
-          setRawChartData(generateHistoricalApyFallback(liveApy, 365));
-        }
-      } catch (e) {}
-      setIsFetchingMarket(false);
-    };
-    if (currentAsset.address) fetchMarket();
-  }, [currentAsset.address, chainId, config.USDC]);
-
-  const chartData = useMemo(() => {
-    if (!rawChartData.length) return [];
-    const cutoff = Date.now() - (historyDays * 24 * 60 * 60 * 1000);
-    return rawChartData.filter(d => d.timestamp >= cutoff);
-  }, [rawChartData, historyDays]);
-
-  const safeMarketId = marketParams.id !== '0x0' ? marketParams.id : '0x0000000000000000000000000000000000000000000000000000000000000000';
-
-  const { data: rawContractData, refetch: refetchReads } = useReadContracts({
-    contracts: [
-      { address: config.cbBTC as `0x${string}`, abi: erc20Abi, functionName: 'balanceOf', args: [safeAddress] },
-      { address: config.cbETH as `0x${string}`, abi: erc20Abi, functionName: 'balanceOf', args: [safeAddress] },
-      { address: currentAsset.address as `0x${string}`, abi: erc20Abi, functionName: 'allowance', args: [safeAddress, MORPHO_BLUE_ADDRESS] },
-      { address: MORPHO_BLUE_ADDRESS as `0x${string}`, abi: morphoAbi, functionName: 'market', args: [safeMarketId as `0x${string}`] }
-    ],
-    query: { enabled: !!address, refetchInterval: 6000 }
+  const { data: balance, isError: balanceError, refetch: refetchBalance } = useReadContract({
+    address: quote?.assetAddress,
+    chainId: marketChainId,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: address ? [address] : undefined,
+    query: { enabled, refetchInterval: 20_000 },
+  });
+  const { data: otherBalance, refetch: refetchOther } = useReadContract({
+    address: otherAsset?.address,
+    chainId: otherAsset?.chainId,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: address && otherAsset ? [address] : undefined,
+    query: { enabled: Boolean(enabled && otherAsset), refetchInterval: 20_000 },
+  });
+  const { data: allowance, refetch: refetchAllowance } = useReadContract({
+    address: quote?.assetAddress,
+    chainId: marketChainId,
+    abi: erc20Abi,
+    functionName: 'allowance',
+    args: address && spender ? [address, spender] : undefined,
+    query: { enabled: Boolean(enabled && spender), refetchInterval: 20_000 },
+  });
+  const { data: position, refetch: refetchPosition } = useReadContract({
+    address: MORPHO_BLUE,
+    chainId: marketChainId,
+    abi: morphoAbi,
+    functionName: 'position',
+    args: address && morpho ? [morpho.marketId, address] : undefined,
+    query: { enabled: Boolean(enabled && morpho), refetchInterval: 20_000 },
+  });
+  const { data: market, refetch: refetchMarket } = useReadContract({
+    address: MORPHO_BLUE,
+    chainId: marketChainId,
+    abi: morphoAbi,
+    functionName: 'market',
+    args: morpho ? [morpho.marketId] : undefined,
+    query: { enabled: Boolean(enabled && morpho), refetchInterval: 20_000 },
+  });
+  const { data: oraclePrice, refetch: refetchOracle } = useReadContract({
+    address: morpho?.oracle,
+    chainId: marketChainId,
+    abi: oracleAbi,
+    functionName: 'price',
+    query: { enabled: Boolean(enabled && morpho), refetchInterval: 20_000 },
+  });
+  const { data: account, refetch: refetchAccount } = useReadContract({
+    address: aave?.pool,
+    chainId: marketChainId,
+    abi: aavePoolAbi,
+    functionName: 'getUserAccountData',
+    args: address ? [address] : undefined,
+    query: { enabled: Boolean(enabled && aave), refetchInterval: 20_000 },
+  });
+  const { data: aTokenBalance, refetch: refetchAToken } = useReadContract({
+    address: aave?.aToken,
+    chainId: marketChainId,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: address ? [address] : undefined,
+    query: { enabled: Boolean(enabled && aave), refetchInterval: 20_000 },
   });
 
-  const { data: rawPositionData, refetch: refetchPosition } = useReadContract({
-    address: MORPHO_BLUE_ADDRESS as `0x${string}`, abi: morphoAbi, functionName: 'position',
-    args: [safeMarketId as `0x${string}`, safeAddress],
-    query: { enabled: marketParams.id !== '0x0' && !!address, refetchInterval: 6000 }
-  });
-
-  const prevContractData = useRef<any>(null);
-  const prevPositionData = useRef<any>(null);
-  if (rawContractData) prevContractData.current = rawContractData;
-  if (rawPositionData) prevPositionData.current = rawPositionData;
-  
-  const contractData = rawContractData || prevContractData.current;
-  const positionData = rawPositionData || prevPositionData.current;
-
-  const marketData = contractData?.[3]?.result as any;
-  const totalBorrowAssets = marketData?.[2] || 0n;
-  const totalBorrowShares = marketData?.[3] || 0n;
-  const borrowShares = positionData?.[1] || 0n;
-
-  let exactDebtAssets = 0n;
-  if (totalBorrowShares > 0n) {
-    const VIRTUAL_SHARES = 1000000n; 
-    const VIRTUAL_ASSETS = 1000000n; 
-    const numerator = borrowShares * (totalBorrowAssets + VIRTUAL_ASSETS);
-    const denominator = totalBorrowShares + VIRTUAL_SHARES;
-    exactDebtAssets = (numerator + denominator - 1n) / denominator; 
+  function refetchAll() {
+    void refetchBalance();
+    void refetchOther();
+    void refetchAllowance();
+    void refetchPosition();
+    void refetchMarket();
+    void refetchOracle();
+    void refetchAccount();
+    void refetchAToken();
   }
-
-  const existingDebt = Number(formatUnits(exactDebtAssets, 6)); 
-
-  const currentPrice = selectedAsset === 'cbBTC' ? realTimePrices.cbBTC : realTimePrices.cbETH;
-  
-  const cbBtcBal = contractData?.[0]?.result !== undefined ? Number(formatUnits(contractData[0].result as bigint, 8)) : 0;
-  const cbEthBal = contractData?.[1]?.result !== undefined ? Number(formatUnits(contractData[1].result as bigint, 18)) : 0;
-  const walletBalance = selectedAsset === 'cbBTC' ? cbBtcBal : cbEthBal;
-  
-  const currentAllowance = contractData?.[2]?.result !== undefined ? (contractData[2].result as bigint) : 0n;
-
-  const existingCollateralAmount = positionData?.[2] !== undefined ? Number(formatUnits(positionData[2] as bigint, currentAsset.decimals)) : 0;
-  const existingCollateralUsd = existingCollateralAmount * currentPrice;
-  const dynamicLLTV = marketParams.lltv > 0n ? Number(formatUnits(marketParams.lltv, 18)) : 0.86; 
-
-  const supplyAmountToken = supplyUsdInput ? Number(supplyUsdInput) / currentPrice : 0;
-  const borrowAmountValue = Number(borrowAmount || 0);
-
-  const projectedTotalCollateralAmount = existingCollateralAmount + supplyAmountToken;
-  const projectedTotalCollateralUsd = projectedTotalCollateralAmount * currentPrice;
-  const projectedTotalDebt = existingDebt + borrowAmountValue;
-
-  const absoluteMaxBorrowCapacity = projectedTotalCollateralUsd * dynamicLLTV;
-  const projectedAvailableToBorrow = Math.max(0, absoluteMaxBorrowCapacity - projectedTotalDebt);
-
-  const projectedLtvPercent = projectedTotalCollateralUsd > 0 ? (projectedTotalDebt / projectedTotalCollateralUsd) * 100 : 0;
-  const maxLtvPercent = dynamicLLTV * 100;
-  const isLiquidated = projectedTotalCollateralUsd > 0 && projectedLtvPercent >= maxLtvPercent;
-
-  const healthRatio = projectedTotalCollateralUsd > 0 ? projectedLtvPercent / maxLtvPercent : 0;
-  
-  let healthStatus = { label: 'Safe', color: 'text-green-600 dark:text-green-400', bg: 'bg-green-50 dark:bg-green-500/10', icon: ShieldCheck };
-  if (isLiquidated) {
-     healthStatus = { label: 'Liquidated', color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10', icon: Skull };
-  } else if (healthRatio > 0.90) {
-     healthStatus = { label: 'Danger', color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10', icon: AlertTriangle };
-  } else if (healthRatio > 0.75) {
-     healthStatus = { label: 'Warning', color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-50 dark:bg-orange-500/10', icon: Activity };
-  }
-
-  const simulatedPrice = currentPrice * (1 - (simulatedDrop / 100));
-  const simulatedLtv = projectedTotalCollateralAmount > 0 ? (projectedTotalDebt / (projectedTotalCollateralAmount * simulatedPrice)) * 100 : 0;
-  const liquidationPrice = projectedTotalCollateralAmount > 0 ? (projectedTotalDebt / (projectedTotalCollateralAmount * dynamicLLTV)) : 0;
-
-  const isExceedingWallet = supplyAmountToken > walletBalance;
-  const isExceedingMaxBorrow = borrowAmountValue > projectedAvailableToBorrow;
-
-  const safeTokenSupply = parseUnits(supplyAmountToken.toFixed(currentAsset.decimals), currentAsset.decimals);
-  const needsApproval = safeTokenSupply > 0n && currentAllowance < safeTokenSupply && !optimisticApproval;
-
-  const { writeContract: write, data: hash, isPending: isWalletPromptOpen, reset: resetTx } = useWriteContract();
-  const { isLoading: isConfirming, isSuccess: isTxSuccess } = useWaitForTransactionReceipt({ hash });
-  
-  const isTxBusy = isWalletPromptOpen || isConfirming;
 
   useEffect(() => {
-    if (isTxSuccess) {
-      if (lastAction === 'approve') setOptimisticApproval(true);
-      else { setSupplyUsdInput(''); setBorrowAmount(''); }
-      refetchReads(); refetchPosition();
-      setTimeout(() => { refetchReads(); refetchPosition(); }, 4000);
-      toast.success("Transaction Confirmed!");
-      resetTx();
+    if (!confirmed) return;
+    if (confirmed.action === 'supply') {
+      setSupplyAmount(null);
+      setSupplyEpoch((value) => value + 1);
     }
-  }, [isTxSuccess, refetchReads, refetchPosition, resetTx, lastAction]);
+    if (confirmed.action === 'borrow') {
+      setBorrowAmount(null);
+      setBorrowEpoch((value) => value + 1);
+    }
+    refetchAll();
+    // refetch identities change every render; the confirmation nonce is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmed]);
 
-  const handleAction = (type: 'approve' | 'supply' | 'borrow') => {
-    setLastAction(type);
-    const m = { loanToken: config.USDC, collateralToken: currentAsset.address, oracle: marketParams.oracle as `0x${string}`, irm: marketParams.irm as `0x${string}`, lltv: marketParams.lltv };
+  if (!quote || !safe || !spender) {
+    return <p className="text-sm text-muted-foreground">Choose a borrow market above to continue.</p>;
+  }
 
-    if (type === 'approve') write({ address: currentAsset.address as `0x${string}`, abi: erc20Abi, functionName: 'approve', args: [MORPHO_BLUE_ADDRESS, maxUint256] });
-    else if (type === 'supply') write({ address: MORPHO_BLUE_ADDRESS, abi: morphoAbi, functionName: 'supplyCollateral', args: [m, safeTokenSupply, safeAddress, '0x'] });
-    else write({ address: MORPHO_BLUE_ADDRESS, abi: morphoAbi, functionName: 'borrow', args: [m, parseUnits(borrowAmountValue.toString(), 6), 0n, safeAddress, safeAddress] });
-  };
+  const walletBalance = balance ?? 0n;
+  const currentAllowance = allowance ?? 0n;
+  const price = tokenPriceUsd(quote.assetSymbol, quote.priceUsd);
+  const existingCollateral = morpho ? (position?.[2] ?? 0n) : (aTokenBalance ?? 0n);
+  const existingDebt = morpho
+    ? morphoDebtAssets(position?.[1] ?? 0n, market?.[2] ?? 0n, market?.[3] ?? 0n)
+    : 0n;
+  const oracle = oraclePrice ?? 0n;
+  const onChainBorrowRoom = morpho
+    ? applySafetyBuffer(morphoMaxBorrowAssets(existingCollateral, oracle, BigInt(morpho.lltv)))
+    : applySafetyBuffer((account?.[2] ?? 0n) / 100n);
+  const borrowRoom = onChainBorrowRoom > existingDebt ? onChainBorrowRoom - existingDebt : 0n;
+  const collateralValue = morpho ? morphoCollateralToLoan(existingCollateral, oracle) : 0n;
+  const ltv = collateralValue > 0n ? Number((existingDebt * 10_000n) / collateralValue) / 100 : 0;
+  const stale = Date.now() - fetchedAt > RATE_MAX_AGE_MS;
+  const wrongChain = isConnected && chain?.id !== quote.chainId;
+  const connectedChainId = chain?.id ?? 0;
+  const walletChainId = isChainId(connectedChainId) ? connectedChainId : null;
+  const alternate = wrongChain && walletChainId ? venueOnChain(venues, quote, walletChainId) : null;
+  const marketMissing = Boolean(morpho && market && market[4] === 0n);
+  const oracleReady = !morpho || oracle > 0n;
+  const supplyTooBig = supplyAmount !== null && supplyAmount > walletBalance;
+  const borrowTooBig = borrowAmount !== null && borrowAmount > borrowRoom;
+  const step = approvalStep(currentAllowance, supplyAmount ?? 0n);
+  const pendingSupply = supplyAmount !== null && supplyAmount > 0n;
+
+  const confidence = venueConfidence(quote);
+  const collateralTokens = Number(formatUnits(existingCollateral, quote.assetDecimals));
+  const collateralUsd = tokenAmountUsd(existingCollateral, quote.assetDecimals, price);
+  const supplyUsd = supplyAmount && supplyAmount > 0n ? tokenAmountUsd(supplyAmount, quote.assetDecimals, price) : null;
+  const estimatedBorrowUsd = supplyUsd !== null ? supplyUsd * quote.maxLtv * 0.9 : null;
+  const debtUsd = morpho
+    ? Number(formatUnits(existingDebt, quote.loanDecimals))
+    : Number(formatUnits(account?.[1] ?? 0n, 8));
+  const liquidationPrice = collateralTokens > 0 && debtUsd > 0 ? debtUsd / (collateralTokens * quote.maxLtv) : 0;
+  const simulatedPrice = quote.priceUsd * (1 - drop / 100);
+  const simulatedLtv = collateralTokens > 0 && simulatedPrice > 0 ? (debtUsd / (collateralTokens * simulatedPrice)) * 100 : 0;
+
+  async function approve(amount: bigint) {
+    await send(amount === 0n ? 'reset' : 'approve', {
+      address: quote!.assetAddress,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [spender!, amount],
+      chainId: quote!.chainId,
+    });
+  }
+
+  async function supply() {
+    if (!address || !supplyAmount || supplyAmount <= 0n) return;
+    const params = morphoParams(quote!);
+    if (quote!.protocol === 'morpho' && params) {
+      await send('supply', {
+        address: MORPHO_BLUE,
+        abi: morphoAbi,
+        functionName: 'supplyCollateral',
+        args: [params, supplyAmount, address, '0x'],
+        chainId: quote!.chainId,
+      });
+      return;
+    }
+    if (aave) {
+      await send('supply', {
+        address: aave.pool,
+        abi: aavePoolAbi,
+        functionName: 'supply',
+        args: [quote!.assetAddress, supplyAmount, address, 0],
+        chainId: quote!.chainId,
+      });
+    }
+  }
+
+  async function borrow() {
+    if (!address || !borrowAmount || borrowAmount <= 0n || borrowAmount > borrowRoom) return;
+    const params = morphoParams(quote!);
+    if (quote!.protocol === 'morpho' && params) {
+      await send('borrow', {
+        address: MORPHO_BLUE,
+        abi: morphoAbi,
+        functionName: 'borrow',
+        args: [params, borrowAmount, 0n, address, address],
+        chainId: quote!.chainId,
+      });
+      return;
+    }
+    if (aave) {
+      await send('borrow', {
+        address: aave.pool,
+        abi: aavePoolAbi,
+        functionName: 'borrow',
+        args: [quote!.loanAddress, borrowAmount, 2n, 0, address],
+        chainId: quote!.chainId,
+      });
+    }
+  }
 
   return (
     <div className="space-y-4">
-      
-      {/* 2x2 Tight Mobile Grid */}
-      <div className="grid grid-cols-2 gap-3">
-        <Card className="shadow-sm border-muted">
-          <CardContent className="p-3 flex flex-col justify-center h-full">
-            <p className="text-[10px] text-muted-foreground font-semibold uppercase mb-0.5">Collateral</p>
-            <p className="text-lg font-bold">${projectedTotalCollateralUsd.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
-          </CardContent>
-        </Card>
-        <Card className="shadow-sm border-muted">
-          <CardContent className="p-3 flex flex-col justify-center h-full">
-            <p className="text-[10px] text-muted-foreground font-semibold uppercase mb-0.5">Debt Payout</p>
-            <p className="text-lg font-bold text-red-500">${projectedTotalDebt.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
-          </CardContent>
-        </Card>
-        <Card className="shadow-sm border-muted">
-          <CardContent className="p-3 flex flex-col justify-center h-full">
-            <p className="text-[10px] text-muted-foreground font-semibold uppercase mb-0.5">Avail. to Borrow</p>
-            <p className="text-lg font-bold text-foreground">${projectedAvailableToBorrow.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
-          </CardContent>
-        </Card>
-        
-        <Card className={`shadow-sm border transition-colors ${isLiquidated ? 'border-red-500' : 'border-muted'} ${healthStatus.bg}`}>
-          <CardContent className="p-3 flex flex-col justify-center h-full">
-            <p className={`text-[10px] font-bold uppercase mb-0.5 ${healthStatus.color}`}>{healthStatus.label}</p>
-            <p className={`text-lg font-black ${healthStatus.color}`}>{projectedLtvPercent.toFixed(1)}% <span className="text-xs font-semibold opacity-70">LTV</span></p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card className="shadow-lg border-muted">
-        <CardContent className="p-4 space-y-6">
-          
-          <div className="space-y-3">
-            <div className="flex justify-between items-center mb-1">
-              <label className="text-sm font-semibold">1. Supply {selectedAsset}</label>
-              {/* RESTORED: Asset symbol and USD value calculation */}
-              <span className="text-[10px] font-bold bg-muted px-2 py-1 rounded text-muted-foreground truncate max-w-[180px]">
-                Wallet: {walletBalance.toFixed(4)} {selectedAsset} (${(walletBalance * currentPrice).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})})
-              </span>
-            </div>
-            <div className="flex space-x-2">
-              <div className="flex-1 flex flex-col relative">
-                <span className="absolute left-3 top-3.5 text-lg font-bold text-muted-foreground">$</span>
-                <Input type="number" step="any" placeholder="0.00" value={supplyUsdInput} onChange={(e) => setSupplyUsdInput(e.target.value)} className={`h-12 text-lg font-bold pl-7 pr-2 ${isExceedingWallet ? 'border-red-500' : ''}`} />
-              </div>
-              <Select value={selectedAsset} onValueChange={(val: any) => { setSelectedAsset(val); setSupplyUsdInput(''); setBorrowAmount(''); }}>
-                <SelectTrigger className="w-[100px] h-12 text-sm font-bold"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="cbBTC">cbBTC</SelectItem><SelectItem value="cbETH">cbETH</SelectItem></SelectContent>
-              </Select>
-            </div>
-            <div className="flex gap-2">
-              {[25, 50, 75, 100].map(pct => (
-                <Button key={pct} variant="outline" size="sm" className="flex-1 text-xs h-8 font-bold" onClick={() => setSupplyUsdInput(((walletBalance * currentPrice * pct) / 100).toFixed(2))}>{pct === 100 ? 'MAX' : `${pct}%`}</Button>
-              ))}
-            </div>
-          </div>
-
-          <div className="space-y-3 pt-4 border-t">
-            <div className="flex justify-between items-center">
-              <label className="text-sm font-semibold">2. Borrow USDC</label>
-              {/* RESTORED: 2 decimal places and the "USDC" label */}
-              <span className="text-[10px] text-muted-foreground font-medium">Safe Limit: <span className="text-foreground font-bold">{projectedAvailableToBorrow.toFixed(2)} USDC</span></span>
-            </div>
-            <div className="flex space-x-2">
-              <Input type="number" step="any" placeholder="0.00" value={borrowAmount} onChange={(e) => setBorrowAmount(e.target.value)} className={`flex-1 h-12 text-lg font-bold px-3 ${isExceedingMaxBorrow ? 'border-red-500' : ''}`} />
-              <Button variant="outline" disabled className="w-[80px] h-12 text-sm opacity-100 font-bold">USDC</Button>
-            </div>
-          </div>
-
-          <div className="pt-4 border-t flex flex-col space-y-3">
-            {isExceedingWallet ? (
-               <Button className="w-full h-12 font-bold text-white bg-red-500 cursor-not-allowed" disabled>Insufficient {selectedAsset}</Button>
-            ) : needsApproval ? (
-              <Button className="w-full h-12 font-bold bg-indigo-600 text-white" disabled={isTxBusy} onClick={() => handleAction('approve')}>{isTxBusy ? 'Confirming...' : 'Approve Asset'}</Button>
-            ) : (
-              <div className="flex space-x-2">
-                <Button className="flex-1 h-12 text-sm font-bold bg-indigo-600 text-white" disabled={supplyAmountToken <= 0 || isTxBusy || isFetchingMarket} onClick={() => handleAction('supply')}>{isTxBusy ? 'Wait...' : 'Supply'}</Button>
-                <Button className="flex-1 h-12 text-sm font-bold bg-blue-600 text-white" disabled={borrowAmountValue <= 0 || isExceedingMaxBorrow || isTxBusy || isFetchingMarket} onClick={() => handleAction('borrow')}>{isTxBusy ? 'Wait...' : 'Borrow'}</Button>
-              </div>
-            )}
-          </div>
+      <Card>
+        <CardContent className="p-4">
+          <p className="text-[10px] font-semibold uppercase text-muted-foreground">In your wallet · {chainLabel(quote.chainId)}</p>
+          {!isConnected ? (
+            <p className="text-lg font-bold">Connect a wallet to see {quote.assetSymbol}</p>
+          ) : balanceError ? (
+            <p className="text-lg font-bold">Could not read {quote.assetSymbol} on {chainLabel(quote.chainId)}</p>
+          ) : balance === undefined ? (
+            <p className="text-lg font-bold">Reading {quote.assetSymbol}…</p>
+          ) : (
+            <>
+              <p className="text-2xl font-bold tracking-tight">{formatToken(walletBalance, quote.assetDecimals)} {quote.assetSymbol}</p>
+              {tokenAmountUsd(walletBalance, quote.assetDecimals, price) !== null && (
+                <p className="text-sm text-muted-foreground">{formatUsdExact(tokenAmountUsd(walletBalance, quote.assetDecimals, price) ?? 0)}</p>
+              )}
+              {walletBalance === 0n && existingCollateral === 0n && (
+                <p className="mt-1 text-xs text-muted-foreground">This address has no {quote.assetSymbol} on {chainLabel(quote.chainId)}.</p>
+              )}
+              {walletBalance === 0n && quote.chainId === 8453 && quote.assetSymbol === 'cbBTC' && (
+                <CoinbaseTransferButton className="mt-2 h-9 bg-blue-600 text-xs text-white hover:bg-blue-700" />
+              )}
+              {walletBalance > 0n && existingCollateral === 0n && (
+                <p className="mt-1 text-xs text-muted-foreground">This {quote.assetSymbol} is still in your wallet. Supply it below to borrow against it.</p>
+              )}
+            </>
+          )}
+          {otherAsset && otherBalance !== undefined && otherBalance > 0n && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              You also hold {formatToken(otherBalance, otherAsset.decimals)} {quote.assetSymbol} on {chainLabel(otherAsset.chainId)}. Choose a {chainLabel(otherAsset.chainId)} market to use that balance.
+            </p>
+          )}
         </CardContent>
       </Card>
 
-      {/* Advanced Analytics Toggle */}
-      <Button 
-        variant="ghost" 
-        className="w-full flex items-center justify-center space-x-2 text-muted-foreground text-xs font-semibold py-4"
-        onClick={() => setShowAdvanced(!showAdvanced)}
-      >
-        <span>Advanced Analytics</span>
-        {showAdvanced ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
-      </Button>
+      <div className="grid grid-cols-2 gap-3">
+        <Card><CardContent className="p-3"><p className="text-[10px] font-semibold uppercase text-muted-foreground">Supplied on {protocolLabel(quote.protocol)}</p><p className="text-lg font-bold">{formatToken(existingCollateral, quote.assetDecimals)} {quote.assetSymbol}</p>{existingCollateral === 0n ? <p className="text-xs text-muted-foreground">Nothing supplied yet</p> : collateralUsd !== null && <p className="text-xs text-muted-foreground">{formatUsdExact(collateralUsd)}</p>}</CardContent></Card>
+        <Card><CardContent className="p-3"><p className="text-[10px] font-semibold uppercase text-muted-foreground">Debt</p><p className="text-lg font-bold text-red-500">{formatUsdExact(debtUsd)}</p>{morpho && <p className="text-xs text-muted-foreground">{formatToken(existingDebt, quote.loanDecimals)} USDC</p>}</CardContent></Card>
+        <Card><CardContent className="p-3"><p className="text-[10px] font-semibold uppercase text-muted-foreground">Safe to borrow</p><p className="text-lg font-bold">{formatUsdExact(tokenAmountUsd(borrowRoom, quote.loanDecimals, 1) ?? 0)}</p></CardContent></Card>
+        <Card><CardContent className="p-3"><p className="text-[10px] font-semibold uppercase text-muted-foreground">{protocolLabel(quote.protocol)}</p><p className="text-lg font-bold">{morpho ? `${ltv.toFixed(1)}% LTV` : account && account[1] > 0n ? `HF ${(Number(account[5] / 10n ** 14n) / 10_000).toFixed(2)}` : 'No debt'}</p></CardContent></Card>
+      </div>
 
-      {showAdvanced && (
-        <div className="space-y-4 animate-in slide-in-from-top-4 duration-300">
-          <Card className="shadow border-muted">
-            <CardHeader className="p-4 pb-2"><CardTitle className="text-sm">Position Stress Test</CardTitle></CardHeader>
-            <CardContent className="p-4 space-y-4">
-              <div className="p-3 bg-muted/40 rounded border flex justify-between items-center"><span className="text-xs text-muted-foreground">Liquidation Price</span><span className="font-black text-sm">{projectedTotalDebt > 0 ? `$${liquidationPrice.toFixed(2)}` : '$0.00'}</span></div>
-              <div className="space-y-3">
-                <div className="flex justify-between text-xs font-semibold text-muted-foreground"><span>Market Drop</span><span>-{simulatedDrop}%</span></div>
-                <Slider value={[simulatedDrop]} max={99} step={1} onValueChange={(v) => setSimulatedDrop(v[0])} />
-                <div className="flex justify-between text-xs font-bold"><span>Price: ${(simulatedPrice).toFixed(0)}</span><span className={simulatedLtv >= (dynamicLLTV * 100) ? 'text-red-500' : 'text-orange-500'}>{simulatedLtv >= (dynamicLLTV * 100) ? 'LIQ.' : `LTV: ${simulatedLtv.toFixed(1)}%`}</span></div>
-              </div>
-            </CardContent>
-          </Card>
+      <Card>
+        <CardContent className="space-y-2 p-4">
+          <p className={`text-xs font-bold ${confidence.level === 'cautious' ? 'text-orange-600 dark:text-orange-400' : 'text-emerald-700 dark:text-emerald-400'}`}>{confidence.label}</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">{confidence.detail} Borrowing stays capped at 90% of this pool&apos;s maximum LTV.</p>
+        </CardContent>
+      </Card>
 
-          <Card className="shadow border-muted flex flex-col h-[280px]">
-            <CardHeader className="p-4 pb-2 flex flex-row items-center justify-between">
-              <CardTitle className="text-sm">Historical APY</CardTitle>
-            </CardHeader>
-            <CardContent className="flex-1 min-h-0 px-2 pb-4">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#888" opacity={0.2} />
-                  <XAxis dataKey="date" tick={{fontSize: 10}} tickLine={false} axisLine={false} />
-                  <YAxis tick={{fontSize: 10}} tickLine={false} axisLine={false} tickFormatter={v => `${v}%`} width={35} domain={['dataMin - 1', 'dataMax + 1']} />
-                  <ChartTooltip contentStyle={{ borderRadius: '8px', fontSize: '12px' }} formatter={v => [`${v}%`, 'APY']} />
-                  <Line type="monotone" dataKey="apy" stroke="#3b82f6" strokeWidth={2.5} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <UsdAmountField
+            label={`Supply ${quote.assetSymbol}`}
+            symbol={quote.assetSymbol}
+            decimals={quote.assetDecimals}
+            priceUsd={quote.priceUsd}
+            balance={balance === undefined ? undefined : walletBalance}
+            epoch={supplyEpoch}
+            invalid={supplyTooBig}
+            onAmount={setSupplyAmount}
+          />
+          {supplyUsd !== null && estimatedBorrowUsd !== null && (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              This supply is about {formatUsdExact(supplyUsd)}. After it confirms, the 90% safety cap on the {Math.round(quote.maxLtv * 100)}% maximum LTV is about {formatUsdExact(estimatedBorrowUsd)} USDC.
+            </p>
+          )}
+
+          <div className="border-t pt-4">
+            <UsdAmountField
+              label="Borrow USDC"
+              symbol="USDC"
+              decimals={quote.loanDecimals}
+              priceUsd={1}
+              balance={borrowRoom}
+              balanceLabel="Safe to borrow"
+              epoch={borrowEpoch}
+              invalid={borrowTooBig}
+              onAmount={setBorrowAmount}
+            />
+            <p className="mt-2 text-xs text-muted-foreground">The borrow limit uses collateral already supplied, at 90% of this pool&apos;s maximum.</p>
+          </div>
+
+          {stale && <p className="text-xs font-medium text-orange-500">Rates are older than 3 minutes. Refresh before sending a transaction.</p>}
+          {marketMissing && <p className="text-xs font-medium text-red-500">This Morpho market is not initialized.</p>}
+          {!oracleReady && <p className="text-xs font-medium text-orange-500">Waiting for the on-chain oracle before borrow is enabled.</p>}
+          {pendingSupply && borrowRoom > 0n && <p className="text-xs text-muted-foreground">Borrow now uses only collateral already supplied. Supply first to raise the limit.</p>}
+          {pendingSupply && borrowRoom === 0n && <p className="text-xs text-muted-foreground">Supply first. Borrowing opens once the supply confirms.</p>}
+          {borrowAmount !== null && Number(formatUnits(borrowAmount, quote.loanDecimals)) > quote.liquidityUsd && (
+            <p className="text-xs font-medium text-orange-500">This borrow is larger than the liquidity available in the selected market.</p>
+          )}
+
+          {!isConnected ? (
+            <Button className="h-12 w-full" disabled>Connect a wallet to continue</Button>
+          ) : wrongChain ? (
+            <WrongNetworkActions
+              walletName={chain?.name ?? 'another network'}
+              marketChainId={quote.chainId}
+              alternate={alternate}
+              onUseAlternate={onSelect}
+            />
+          ) : !gas.enough ? (
+            <GasNotice chainId={quote.chainId} symbol={quote.assetSymbol} neededEth={gas.neededEth} balanceEth={gas.balanceEth} />
+          ) : supplyTooBig ? (
+            <Button className="h-12 w-full" disabled>Insufficient {quote.assetSymbol}</Button>
+          ) : step === 'reset' ? (
+            <Button className="h-12 w-full bg-indigo-600 text-white hover:bg-indigo-700" disabled={isBusy || stale} onClick={() => void approve(0n)}>{isAwaitingWallet ? 'Confirm in wallet…' : isBusy ? 'Confirming…' : 'Reset approval'}</Button>
+          ) : step === 'approve' ? (
+            <Button className="h-12 w-full bg-indigo-600 text-white hover:bg-indigo-700" disabled={isBusy || stale || !supplyAmount} onClick={() => supplyAmount && void approve(supplyAmount)}>{isAwaitingWallet ? 'Confirm in wallet…' : isBusy ? 'Confirming…' : `Approve ${quote.assetSymbol}`}</Button>
+          ) : (
+            <div className="flex gap-2">
+              <Button className="h-12 flex-1 bg-indigo-600 text-white hover:bg-indigo-700" disabled={isBusy || stale || marketMissing || !supplyAmount || supplyAmount <= 0n} onClick={() => void supply()}>{isBusy ? (isAwaitingWallet ? 'Confirm…' : 'Confirming…') : 'Supply'}</Button>
+              <Button className="h-12 flex-1 bg-blue-600 text-white hover:bg-blue-700" disabled={isBusy || stale || marketMissing || !oracleReady || !borrowAmount || borrowAmount <= 0n || borrowTooBig} onClick={() => void borrow()}>{isBusy ? (isAwaitingWallet ? 'Confirm…' : 'Confirming…') : 'Borrow'}</Button>
+            </div>
+          )}
+
+          {isConnected && (
+            <FeeBreakdown
+              quote={quote}
+              actions={[
+                ...(pendingSupply && step !== 'none' ? ['approve'] : []),
+                ...(pendingSupply ? ['supply'] : []),
+                ...(borrowAmount && borrowAmount > 0n ? ['borrow'] : []),
+                ...(!pendingSupply && !(borrowAmount && borrowAmount > 0n) ? ['supply', 'borrow'] : []),
+              ]}
+              interest={{
+                apr: quote.borrowApr,
+                principalUsd: debtUsd + (tokenAmountUsd(borrowAmount ?? 0n, quote.loanDecimals, 1) ?? 0),
+                label: borrowAmount && borrowAmount > 0n ? 'Interest after this borrow' : 'Interest on current debt',
+              }}
+            />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-semibold">Liquidation price</span>
+            <span className="font-bold">{liquidationPrice > 0 ? formatUsd(liquidationPrice) : 'No debt'}</span>
+          </div>
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>BTC drop</span><span>-{drop}%</span>
+          </div>
+          <Slider value={[drop]} max={90} step={1} onValueChange={(value) => setDrop(value[0] ?? 0)} />
+          <p className={`text-xs font-semibold ${simulatedLtv >= quote.maxLtv * 100 ? 'text-red-500' : 'text-muted-foreground'}`}>
+            At {formatUsd(simulatedPrice)}, LTV would be {simulatedLtv.toFixed(1)}% against a {Math.round(quote.maxLtv * 100)}% maximum.
+          </p>
+        </CardContent>
+      </Card>
     </div>
   );
 }

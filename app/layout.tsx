@@ -43,7 +43,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Navbar />
           
           {/* Tighter mobile padding and max-width */}
-          <main className="w-full max-w-md mx-auto py-4 px-3 overflow-x-hidden">
+          <main className="w-full max-w-3xl mx-auto py-4 px-3 overflow-x-hidden">
             {children}
           </main>
           <Toaster position="bottom-right" theme="system" /> 

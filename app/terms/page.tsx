@@ -29,7 +29,7 @@ export default function TermsOfService() {
           <section className="space-y-3">
             <h2 className="text-lg font-bold text-foreground">1. Non-Custodial & Decentralized Nature</h2>
             <p>
-              <strong className="text-foreground">Simple<span className="text-blue-500">BTC</span> Borrow</strong> is a strictly non-custodial, open-source user interface (the "Interface") that facilitates interaction with the decentralized Morpho Blue smart contracts on the Base network. We do not have access to your private keys, funds, or assets at any time. All transactions are executed directly between your cryptographic wallet and the blockchain.
+              <strong className="text-foreground">Simple<span className="text-blue-500">BTC</span> Borrow</strong> is a strictly non-custodial user interface (the &ldquo;Interface&rdquo;) for Morpho Blue and Aave V3 on Ethereum and Base. Bitcoin addresses are read from the public Bitcoin network. The Interface does not take custody of BTC, does not generate Bitcoin deposit addresses, and does not have access to your private keys. Transactions are executed by your wallet.
             </p>
           </section>
 
@@ -39,7 +39,7 @@ export default function TermsOfService() {
               Using decentralized finance (DeFi) protocols involves significant risks, including but not limited to:
             </p>
             <ul className="list-disc list-inside space-y-2 ml-2">
-              <li><strong>Smart Contract Risk:</strong> Vulnerabilities or bugs in the Morpho Blue protocol or underlying blockchain networks.</li>
+              <li><strong>Smart Contract Risk:</strong> Vulnerabilities or bugs in Morpho Blue, Aave V3, tBTC, or the underlying networks.</li>
               <li><strong>Market Volatility:</strong> Cryptographic assets are highly volatile. Severe price drops may result in the automatic liquidation of your collateral.</li>
               <li><strong>Regulatory Risk:</strong> Changes in laws or regulations may impact the legality or functionality of DeFi applications in your jurisdiction.</li>
             </ul>
@@ -51,7 +51,7 @@ export default function TermsOfService() {
           <section className="space-y-3">
             <h2 className="text-lg font-bold text-foreground">3. No Financial Advice or Brokerage</h2>
             <p>
-              <strong className="text-foreground">Simple<span className="text-blue-500">BTC</span> Borrow</strong> is not a bank, broker, dealer, or financial institution. The Interface does not provide financial, investment, legal, or tax advice. Any market data or pricing information displayed is provided "as is" for informational purposes only and should not be relied upon as definitive.
+              <strong className="text-foreground">Simple<span className="text-blue-500">BTC</span> Borrow</strong> is not a bank, broker, dealer, or financial institution. The Interface does not provide financial, investment, legal, or tax advice. Any market data or pricing information displayed is provided &ldquo;as is&rdquo; for informational purposes only and should not be relied upon as definitive.
             </p>
           </section>
 

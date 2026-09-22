@@ -11,7 +11,7 @@ export default function Navbar() {
 
   return (
     <nav className="relative border-b bg-background w-full">
-      <div className="flex items-center justify-between p-3 max-w-md mx-auto">
+      <div className="flex items-center justify-between p-3 max-w-3xl mx-auto">
         
         <div className="flex items-center">
           {/* Restored the word "Borrow" here */}

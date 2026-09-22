@@ -47,7 +47,7 @@ export default function ContactPage() {
           Get in <span className="text-blue-600 dark:text-blue-500">Touch</span>
         </h1>
         <p className="text-muted-foreground text-lg">
-          Found a bug? Have a suggestion? Just want to say hi? We'd love to hear from you.
+          Found a bug? Have a suggestion? Just want to say hi? We&apos;d love to hear from you.
         </p>
       </div>
 
