@@ -6,12 +6,16 @@ function base64url(input: Buffer | string) {
   return Buffer.from(input).toString('base64url');
 }
 
+export function cleanEnvValue(value: string) {
+  return value.trim().replace(/^(['"])([\s\S]*)\1$/, '$2').trim();
+}
+
 function loadKey(secret: string): { key: KeyObject; alg: 'ES256' | 'EdDSA' } {
-  const trimmed = secret.replace(/\\n/g, '\n').trim();
+  const trimmed = cleanEnvValue(secret).replace(/\\n/g, '\n').trim();
   if (trimmed.includes('BEGIN')) {
     return { key: createPrivateKey(trimmed), alg: 'ES256' };
   }
-  const raw = Buffer.from(trimmed, 'base64');
+  const raw = Buffer.from(trimmed.replace(/\s+/g, ''), 'base64');
   if (raw.length !== 64 && raw.length !== 32) throw new Error('Unsupported CDP key format');
   const seed = raw.subarray(0, 32);
   return {
@@ -29,6 +33,7 @@ export function cdpJwt({ keyId, secret, method, host, path, ttlSeconds = 120 }: 
   ttlSeconds?: number;
 }) {
   const { key, alg } = loadKey(secret);
+  keyId = cleanEnvValue(keyId);
   const now = Math.floor(Date.now() / 1000);
   const header = { alg, kid: keyId, typ: 'JWT', nonce: randomBytes(16).toString('hex') };
   const payload = {

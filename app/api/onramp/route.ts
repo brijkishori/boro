@@ -12,7 +12,7 @@ const MAX_USD = 1_000_000;
 const hits = new Map<string, number[]>();
 
 function configured() {
-  return Boolean(process.env.CDP_API_KEY_ID && process.env.CDP_API_KEY_SECRET);
+  return Boolean(process.env.CDP_API_KEY_ID?.trim() && process.env.CDP_API_KEY_SECRET?.trim());
 }
 
 function clientIp(request: Request): string | null {
@@ -75,14 +75,21 @@ export async function POST(request: Request) {
   const address = getAddress(body.address);
   const usd = typeof body.usd === 'number' && Number.isFinite(body.usd) && body.usd > 0 && body.usd <= MAX_USD ? Math.round(body.usd * 100) / 100 : null;
 
+  let jwt: string;
   try {
-    const jwt = cdpJwt({
+    jwt = cdpJwt({
       keyId: process.env.CDP_API_KEY_ID!,
       secret: process.env.CDP_API_KEY_SECRET!,
       method: 'POST',
       host: TOKEN_HOST,
       path: TOKEN_PATH,
     });
+  } catch (error) {
+    console.error('onramp: could not sign the CDP request', error instanceof Error ? error.message : error);
+    return Response.json({ error: 'Coinbase transfer is misconfigured on this server.', code: 'key_format' }, { status: 500 });
+  }
+
+  try {
     const response = await fetch(`https://${TOKEN_HOST}${TOKEN_PATH}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' },
@@ -90,9 +97,16 @@ export async function POST(request: Request) {
       signal: AbortSignal.timeout(10_000),
       cache: 'no-store',
     });
-    const data = (await response.json().catch(() => null)) as { token?: unknown } | null;
+    const text = await response.text();
+    let data: { token?: unknown } | null = null;
+    try {
+      data = JSON.parse(text) as { token?: unknown };
+    } catch {
+      data = null;
+    }
     if (!response.ok || typeof data?.token !== 'string') {
-      return Response.json({ error: 'Coinbase did not start the transfer. Try again shortly.' }, { status: 502 });
+      console.error('onramp: Coinbase token request failed', response.status, text.slice(0, 300));
+      return Response.json({ error: 'Coinbase did not start the transfer. Try again shortly.', code: `coinbase_${response.status}` }, { status: 502 });
     }
     const url = new URL('https://pay.coinbase.com/buy/select-asset');
     url.searchParams.set('sessionToken', data.token);
@@ -101,7 +115,8 @@ export async function POST(request: Request) {
     url.searchParams.set('defaultAsset', 'BTC');
     if (usd !== null) url.searchParams.set('presetFiatAmount', String(usd));
     return Response.json({ url: url.toString() }, { headers: { 'Cache-Control': 'no-store' } });
-  } catch {
-    return Response.json({ error: 'Coinbase did not start the transfer. Try again shortly.' }, { status: 502 });
+  } catch (error) {
+    console.error('onramp: Coinbase unreachable', error instanceof Error ? error.message : error);
+    return Response.json({ error: 'Coinbase did not start the transfer. Try again shortly.', code: 'coinbase_unreachable' }, { status: 502 });
   }
 }
