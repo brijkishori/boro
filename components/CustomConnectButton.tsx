@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useAccount, useConnect, useDisconnect, useReconnect } from 'wagmi';
 import { base, mainnet } from 'wagmi/chains';
 import { UserRejectedRequestError } from 'viem';
@@ -42,6 +43,22 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
       },
     );
   });
+}
+
+function Overlay({ children }: { children: ReactNode }) {
+  const [root, setRoot] = useState<HTMLElement | null>(() =>
+    typeof document !== 'undefined' ? document.body : null,
+  );
+  useEffect(() => {
+    setRoot(document.body);
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, []);
+  if (!root) return null;
+  return createPortal(children, root);
 }
 
 function failureMessage(error: unknown, name: string) {
@@ -321,19 +338,12 @@ export default function CustomConnectButton() {
       }
     }
     if (phone) {
-      if (openInWalletApp(choice)) return;
       await startQr(choice);
       return;
     }
     if (choice.id === 'coinbase') await startCoinbaseQr(choice);
     else await startQr(choice);
   }
-
-  useEffect(() => {
-    if (!uri || !qrWallet || !phone) return;
-    const link = walletConnectLink(qrWallet.id, uri);
-    if (link) openWalletUrl(link);
-  }, [uri, qrWallet, phone, device]);
 
   useEffect(() => {
     if (autoOpened.current || !restoreSettled || isConnected || !accepted) return;
@@ -408,8 +418,14 @@ export default function CustomConnectButton() {
       )}
 
       {showTerms && (
-        <div className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/80 p-0 backdrop-blur-sm sm:items-center sm:p-4">
-          <Card className="max-h-[min(92dvh,100%)] w-full max-w-lg overflow-y-auto rounded-b-none border-muted pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl sm:rounded-xl dark:bg-zinc-950">
+        <Overlay>
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Terms of service"
+          className="fixed inset-0 z-[9999] flex h-[100dvh] max-h-[100dvh] items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+        >
+          <Card className="max-h-[min(85dvh,100%)] w-full max-w-lg overflow-y-auto rounded-xl border-muted shadow-2xl dark:bg-zinc-950">
             <CardHeader className="border-b bg-muted/30 pb-4">
               <CardTitle className="text-2xl font-bold tracking-tight">
                 Welcome to Simple<span className="text-blue-500">BTC</span> Borrow
@@ -453,13 +469,20 @@ export default function CustomConnectButton() {
             </CardFooter>
           </Card>
         </div>
+        </Overlay>
       )}
 
       {showWallets && (
-        <div className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/80 p-0 backdrop-blur-sm sm:items-center sm:p-4">
-          <Card className="max-h-[min(92dvh,100%)] w-full max-w-md overflow-y-auto rounded-b-none border-muted pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl sm:rounded-xl dark:bg-zinc-950">
+        <Overlay>
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Connect a wallet"
+          className="fixed inset-0 z-[9999] flex h-[100dvh] max-h-[100dvh] items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+        >
+          <Card className="max-h-[min(85dvh,100%)] w-full max-w-md overflow-y-auto rounded-xl border-muted shadow-2xl dark:bg-zinc-950">
             <CardHeader className="border-b pb-4">
-              <CardTitle className="text-xl font-bold">{qrWallet ? `Scan with ${qrWallet.name}` : 'Connect a wallet'}</CardTitle>
+              <CardTitle className="text-xl font-bold">{qrWallet ? (phone ? `Connect ${qrWallet.name}` : `Scan with ${qrWallet.name}`) : 'Connect a wallet'}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 pt-4">
               {!qrWallet && !phone && (
@@ -490,7 +513,7 @@ export default function CustomConnectButton() {
                 <p className="text-xs leading-relaxed text-muted-foreground">
                   {inAppWalletId()
                     ? 'This page is already inside a wallet. Tap that wallet to finish connecting.'
-                    : 'Tap a wallet to open it. Approve the connection, then this page continues automatically.'}
+                    : 'Tap a wallet. This page stays open. On the next screen, tap Open, approve, then return here.'}
                 </p>
               )}
               {error && <p className="rounded-md border border-red-500/40 bg-red-500/10 p-2 text-xs font-medium text-red-600 dark:text-red-400">{error}</p>}
@@ -523,14 +546,21 @@ export default function CustomConnectButton() {
                 <div className="flex flex-col items-center gap-3">
                   {phone ? (
                     <>
-                      <p className="py-6 text-center text-sm text-muted-foreground">Opening {qrWallet.name}…</p>
-                      {isScannableUri(uri) && (
-                        <Button
-                          type="button"
-                          className="h-11 w-full bg-blue-600 font-bold text-white hover:bg-blue-700"
-                          onClick={() => openWalletUrl(walletConnectLink(qrWallet.id, uri) || walletDappUrl(qrWallet.id))}
-                        >
-                          Open {qrWallet.name}
+                      <p className="text-sm font-semibold">Keep this page open</p>
+                      <p className="text-xs leading-relaxed text-muted-foreground">
+                        {isScannableUri(uri)
+                          ? `Tap Open ${qrWallet.name}, approve the connection, then come back here.`
+                          : `Preparing a link for ${qrWallet.name}…`}
+                      </p>
+                      {isScannableUri(uri) && walletConnectLink(qrWallet.id, uri) ? (
+                        <Button asChild className="h-11 w-full bg-blue-600 font-bold text-white hover:bg-blue-700">
+                          <a href={walletConnectLink(qrWallet.id, uri)} target="_blank" rel="noopener noreferrer">
+                            Open {qrWallet.name}
+                          </a>
+                        </Button>
+                      ) : (
+                        <Button type="button" className="h-11 w-full bg-blue-600 font-bold text-white hover:bg-blue-700" disabled>
+                          Preparing…
                         </Button>
                       )}
                     </>
@@ -584,6 +614,7 @@ export default function CustomConnectButton() {
             </CardFooter>
           </Card>
         </div>
+        </Overlay>
       )}
 
     </>

@@ -149,6 +149,6 @@ export function walletConnectLink(choiceId: string, uri: string) {
 
 export function openWalletUrl(url: string) {
   if (!url || typeof window === 'undefined') return false;
-  window.location.assign(url);
-  return true;
+  const opened = window.open(url, '_blank', 'noopener,noreferrer');
+  return Boolean(opened);
 }
