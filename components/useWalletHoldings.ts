@@ -63,7 +63,6 @@ export function useWalletHoldings() {
     enabled: Boolean(address),
     refetchInterval: 8_000,
     staleTime: 4_000,
-    placeholderData: (previous: unknown) => previous,
   } as const;
   const ethBase = useBalance({ address, chainId: 8453, query });
   const ethMain = useBalance({ address, chainId: 1, query });

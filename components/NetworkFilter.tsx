@@ -40,7 +40,8 @@ export function networkTitle(network: NetworkView) {
 export function NetworkPicker({ onChange }: { onChange?: (network: NetworkView) => void } = {}) {
   const { network, setNetwork } = useNetworkFilter();
   const { isConnected, chain } = useAccount();
-  const walletChainId = isConnected && isChainId(chain?.id ?? 0) ? chain.id : null;
+  const connectedChainId = chain?.id ?? 0;
+  const walletChainId = isConnected && isChainId(connectedChainId) ? connectedChainId : null;
 
   return (
     <div className="space-y-1.5">
