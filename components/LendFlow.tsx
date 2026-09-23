@@ -9,14 +9,14 @@ import WrongNetworkActions from '@/components/WrongNetworkActions';
 import GasNotice from '@/components/GasNotice';
 import FeeBreakdown from '@/components/FeeBreakdown';
 import { GAS_UNITS, useGasCheck } from '@/components/useGasCheck';
-import { aavePoolAbi, erc20Abi, morphoAbi } from '@/lib/abi';
+import { usePosition } from '@/components/usePosition';
+import { adapterFor, approveCall, isolateCall } from '@/lib/adapters';
+import { erc20Abi } from '@/lib/abi';
 import { approvalStep, formatApr, formatToken, formatUsdExact, tokenAmountUsd, tokenPriceUsd } from '@/lib/amount';
 import {
-  MORPHO_BLUE,
   chainLabel,
   isChainId,
   isVenueSafe,
-  morphoParams,
   protocolLabel,
   sameAssetOnOtherChain,
   venueOnChain,
@@ -37,9 +37,8 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
 
   const safe = quote !== null && isVenueSafe(quote) && quote.action === 'lend';
   const spender = safe && quote ? venueSpender(quote) : null;
-  const morpho = safe && quote?.protocol === 'morpho' ? quote.morpho : undefined;
-  const aave = safe && quote?.protocol === 'aave' ? quote.aave : undefined;
   const enabled = Boolean(address && safe);
+  const { snapshot, refetch: refetchPosition } = usePosition(safe ? quote : null, address, enabled);
   const gas = useGasCheck(quote?.chainId, GAS_UNITS.write);
   const marketChainId = quote?.chainId;
   const otherAsset = quote ? sameAssetOnOtherChain(quote.chainId, quote.assetSymbol) : null;
@@ -68,31 +67,6 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
     args: address && spender ? [address, spender] : undefined,
     query: { enabled: Boolean(enabled && spender), refetchInterval: 20_000 },
   });
-  const { data: position, refetch: refetchPosition } = useReadContract({
-    address: MORPHO_BLUE,
-    chainId: marketChainId,
-    abi: morphoAbi,
-    functionName: 'position',
-    args: address && morpho ? [morpho.marketId, address] : undefined,
-    query: { enabled: Boolean(enabled && morpho), refetchInterval: 20_000 },
-  });
-  const { data: supplied, refetch: refetchSupplied } = useReadContract({
-    address: aave?.aToken,
-    chainId: marketChainId,
-    abi: erc20Abi,
-    functionName: 'balanceOf',
-    args: address ? [address] : undefined,
-    query: { enabled: Boolean(enabled && aave), refetchInterval: 20_000 },
-  });
-  const { data: account, refetch: refetchAccount } = useReadContract({
-    address: aave?.pool,
-    chainId: marketChainId,
-    abi: aavePoolAbi,
-    functionName: 'getUserAccountData',
-    args: address ? [address] : undefined,
-    query: { enabled: Boolean(enabled && aave), refetchInterval: 20_000 },
-  });
-
   useEffect(() => {
     if (!confirmed) return;
     if (confirmed.action === 'supply') {
@@ -106,9 +80,7 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
     void refetchBalance();
     void refetchAllowance();
     void refetchPosition();
-    void refetchSupplied();
-    void refetchAccount();
-  }, [confirmed, refetchAccount, refetchAllowance, refetchBalance, refetchPosition, refetchSupplied]);
+  }, [confirmed, refetchAllowance, refetchBalance, refetchPosition]);
 
   if (!quote || !safe || !spender) {
     return <p className="text-sm text-muted-foreground">Choose a lend market above. Lending earns supply APY.</p>;
@@ -116,8 +88,8 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
 
   const walletBalance = balance ?? 0n;
   const price = tokenPriceUsd(quote.assetSymbol, quote.priceUsd);
-  const suppliedBalance = aave ? (supplied ?? 0n) : 0n;
-  const supplyShares = position?.[0] ?? 0n;
+  const suppliedBalance = snapshot.collateral;
+  const supplyShares = snapshot.extra?.shares ?? 0n;
   const step = approvalStep(allowance ?? 0n, amount ?? 0n);
   const stale = Date.now() - fetchedAt > RATE_MAX_AGE_MS;
   const wrongChain = isConnected && chain?.id !== quote.chainId;
@@ -125,67 +97,38 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
   const walletChainId = isChainId(connectedChainId) ? connectedChainId : null;
   const alternate = wrongChain && walletChainId ? venueOnChain(venues, quote, walletChainId) : null;
   const tooBig = amount !== null && amount > walletBalance;
-  const aaveHasDebt = Boolean(aave && account && account[1] > 0n);
-  const withdrawTooBig = Boolean(aave && withdrawAmount && withdrawAmount > suppliedBalance);
+  const hasDebt = snapshot.debt > 0n;
+  const withdrawTooBig = withdrawAmount !== null && withdrawAmount > snapshot.withdrawMax;
+  const canIsolate = (quote.protocol === 'aave' || quote.protocol === 'spark') && suppliedBalance > 0n;
+
+  function ledger(value: bigint) {
+    return {
+      wallet: address!,
+      venue: quote!,
+      amount: value,
+      amountUsd: tokenAmountUsd(value, quote!.assetDecimals, price),
+      amountKind: 'asset' as const,
+      debt: snapshot.debt,
+      collateral: snapshot.collateral,
+      healthFactor: snapshot.healthFactor,
+    };
+  }
 
   async function approve(value: bigint) {
-    await send(value === 0n ? 'reset' : 'approve', {
-      address: quote!.assetAddress,
-      abi: erc20Abi,
-      functionName: 'approve',
-      args: [spender!, value],
-      chainId: quote!.chainId,
-    });
+    await send(value === 0n ? 'reset' : 'approve', approveCall(quote!, spender!, value), ledger(value));
   }
 
   async function supply() {
     if (!address || !amount || amount <= 0n) return;
-    const params = morphoParams(quote!);
-    if (morpho && params) {
-      await send('supply', {
-        address: MORPHO_BLUE,
-        abi: morphoAbi,
-        functionName: 'supply',
-        args: [params, amount, 0n, address, '0x'],
-        chainId: quote!.chainId,
-      });
-      return;
-    }
-    if (aave) {
-      await send('supply', {
-        address: aave.pool,
-        abi: aavePoolAbi,
-        functionName: 'supply',
-        args: [quote!.assetAddress, amount, address, 0],
-        chainId: quote!.chainId,
-      });
-    }
+    const call = adapterFor(quote!).buildSupply(quote!, address, amount, 'lend');
+    if (call) await send('supply', call, ledger(amount));
   }
 
   async function withdraw() {
     if (!address) return;
-    const params = morphoParams(quote!);
-    if (morpho && params && supplyShares > 0n) {
-      const assets = withdrawAmount && withdrawAmount > 0n ? withdrawAmount : 0n;
-      const shares = assets === 0n ? supplyShares : 0n;
-      await send('withdraw', {
-        address: MORPHO_BLUE,
-        abi: morphoAbi,
-        functionName: 'withdraw',
-        args: [params, assets, shares, address, address],
-        chainId: quote!.chainId,
-      });
-      return;
-    }
-    if (aave && withdrawAmount && withdrawAmount > 0n && !aaveHasDebt) {
-      await send('withdraw', {
-        address: aave.pool,
-        abi: aavePoolAbi,
-        functionName: 'withdraw',
-        args: [quote!.assetAddress, withdrawAmount, address],
-        chainId: quote!.chainId,
-      });
-    }
+    const amountOut = withdrawAmount && withdrawAmount > 0n ? withdrawAmount : suppliedBalance;
+    const call = adapterFor(quote!).buildWithdraw(quote!, address, amountOut, 'lend', { shares: supplyShares });
+    if (call) await send('withdraw', call, ledger(amountOut));
   }
 
   return (
@@ -255,14 +198,8 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
         )}
         {isConnected && <FeeBreakdown quote={quote} actions={[...(step !== 'none' ? ['approve'] : []), 'supply', 'withdraw']} />}
 
-        {aave && suppliedBalance > 0n && (
-          <Button variant="outline" className="h-10 w-full" disabled={isBusy} onClick={() => void send('isolate', {
-            address: aave.pool,
-            abi: aavePoolAbi,
-            functionName: 'setUserUseReserveAsCollateral',
-            args: [quote.assetAddress, false],
-            chainId: quote.chainId,
-          })}>
+        {canIsolate && isolateCall(quote) && (
+          <Button variant="outline" className="h-10 w-full" disabled={isBusy} onClick={() => void send('isolate', isolateCall(quote)!, ledger(0n))}>
             Keep this deposit out of collateral
           </Button>
         )}
@@ -271,25 +208,23 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
           <div className="flex items-center justify-between text-sm">
             <span className="font-semibold">Withdraw</span>
             <span className="text-xs text-muted-foreground">
-              {aave ? `Supplied ${formatToken(suppliedBalance, quote.assetDecimals)}${price > 0 ? ` · ${formatUsdExact(tokenAmountUsd(suppliedBalance, quote.assetDecimals, price) ?? 0)}` : ''}` : supplyShares > 0n ? 'Morpho supply is open' : 'No supply yet'}
+              Supplied {formatToken(suppliedBalance, quote.assetDecimals)}{price > 0 ? ` · ${formatUsdExact(tokenAmountUsd(suppliedBalance, quote.assetDecimals, price) ?? 0)}` : ''}
             </span>
           </div>
-          {aave && (
-            <UsdAmountField
-              label={`Withdraw ${quote.assetSymbol}`}
-              symbol={quote.assetSymbol}
-              decimals={quote.assetDecimals}
-              priceUsd={quote.priceUsd}
-              balance={suppliedBalance}
-              balanceLabel="Supplied"
-              epoch={withdrawEpoch}
-              invalid={withdrawTooBig}
-              onAmount={setWithdrawAmount}
-            />
-          )}
-          {aaveHasDebt && <p className="text-xs text-orange-500">This Aave pool still has debt. Repay it before withdrawing collateral-backed BTC.</p>}
-          <Button variant="outline" className="h-11 w-full" disabled={isBusy || wrongChain || !isConnected || (Boolean(aave) && (aaveHasDebt || !withdrawAmount || withdrawAmount <= 0n || withdrawTooBig)) || (Boolean(morpho) && supplyShares === 0n)} onClick={() => void withdraw()}>
-            {morpho && !withdrawAmount ? 'Withdraw full Morpho supply' : 'Withdraw'}
+          <UsdAmountField
+            label={`Withdraw ${quote.assetSymbol}`}
+            symbol={quote.assetSymbol}
+            decimals={quote.assetDecimals}
+            priceUsd={quote.priceUsd}
+            balance={snapshot.withdrawMax}
+            balanceLabel="Safe to withdraw"
+            epoch={withdrawEpoch}
+            invalid={withdrawTooBig}
+            onAmount={setWithdrawAmount}
+          />
+          {hasDebt && <p className="text-xs text-orange-500">This pool still has debt. Only the amount that keeps the loan inside the 90% safety cap can be withdrawn.</p>}
+          <Button variant="outline" className="h-11 w-full" disabled={isBusy || wrongChain || !isConnected || suppliedBalance === 0n || !withdrawAmount || withdrawAmount <= 0n || withdrawTooBig} onClick={() => void withdraw()}>
+            Withdraw
           </Button>
         </div>
       </CardContent>

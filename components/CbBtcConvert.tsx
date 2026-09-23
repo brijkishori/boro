@@ -111,7 +111,7 @@ export default function CbBtcConvert() {
         </div>
         <div className="space-y-2 border-t pt-3">
           <p className="text-xs leading-relaxed text-muted-foreground">
-            tBTC or WBTC already in this wallet can be swapped to cbBTC on Uniswap. That is a market swap, so the amount depends on the pool price.
+            Need tBTC instead? Use Get tBTC above to swap cbBTC or WBTC in this app. The links below still swap into cbBTC on Uniswap.
           </p>
           <div className="flex flex-wrap gap-2">
             {swaps.map((swap) => (

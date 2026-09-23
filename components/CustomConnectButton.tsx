@@ -16,8 +16,13 @@ import {
   WALLET_RDNS,
   coinbaseLinkFromStorage,
   coinbaseSessionId,
+  inAppWalletId,
+  isPhone,
   isScannableUri,
   isWalletConnectUri,
+  openWalletUrl,
+  walletConnectLink,
+  walletDappUrl,
   type WalletChoice,
 } from '@/lib/wallets';
 
@@ -61,13 +66,16 @@ export default function CustomConnectButton() {
   const [showWallets, setShowWallets] = useState(false);
   const [hasAgreed, setHasAgreed] = useState(false);
   const [accepted, setAccepted] = useState(false);
-  const [device, setDevice] = useState<Device>('mobile');
+  const [device, setDevice] = useState<Device>('desktop');
+  const [phone, setPhone] = useState(false);
+  const autoOpened = useRef(false);
   const [more, setMore] = useState(false);
   const [error, setError] = useState('');
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [installed, setInstalled] = useState<string[]>([]);
   const [restoreSettled, setRestoreSettled] = useState(false);
   const [qrWallet, setQrWallet] = useState<WalletChoice | null>(null);
+  const [handoff, setHandoff] = useState<WalletChoice | null>(null);
   const [uri, setUri] = useState('');
   const qrAttempt = useRef(0);
   const expectingUri = useRef(false);
@@ -84,6 +92,9 @@ export default function CustomConnectButton() {
 
   useEffect(() => {
     setAccepted(window.localStorage.getItem('simplebtc_terms_accepted') === 'true');
+    const onPhone = isPhone();
+    setPhone(onPhone);
+    setDevice(onPhone ? 'mobile' : 'desktop');
   }, []);
 
   useEffect(() => {
@@ -124,6 +135,7 @@ export default function CustomConnectButton() {
     expectingUri.current = false;
     setShowWallets(false);
     setQrWallet(null);
+    setHandoff(null);
     setUri('');
     setPendingId(null);
   }, [isConnected]);
@@ -200,6 +212,7 @@ export default function CustomConnectButton() {
     qrAttempt.current += 1;
     expectingUri.current = false;
     setQrWallet(null);
+    setHandoff(null);
     setUri('');
     setPendingId(null);
     const reset = (async () => {
@@ -269,16 +282,34 @@ export default function CustomConnectButton() {
     }
   }
 
+  async function connectInjected(choice: WalletChoice) {
+    const connector = connectors.find((item) => item.id === choice.desktopId);
+    if (!connector) return false;
+    setPendingId(connector.uid);
+    const provider = await withTimeout(connector.getProvider(), 2_500);
+    if (!provider) throw new Error(`${choice.name} is not available in this browser.`);
+    await withTimeout(connectAsync({ connector, chainId: base.id }), 20_000);
+    toast.success(`${choice.name} connected`);
+    return true;
+  }
+
+  function openInWalletApp(choice: WalletChoice) {
+    const dapp = walletDappUrl(choice.id);
+    if (dapp && openWalletUrl(dapp)) {
+      setHandoff(choice);
+      setPendingId(choice.id);
+      setError('');
+      return true;
+    }
+    return false;
+  }
+
   async function choose(choice: WalletChoice) {
     setError('');
-    const connector = connectors.find((item) => item.id === choice.desktopId);
-    if (connector && (device === 'desktop' || installed.includes(choice.desktopId))) {
-      setPendingId(connector.uid);
+    const injectedHere = installed.includes(choice.desktopId) || inAppWalletId() === choice.id;
+    if (injectedHere) {
       try {
-        const provider = await withTimeout(connector.getProvider(), 2_500);
-        if (!provider) throw new Error(`${choice.name} is not available in this browser.`);
-        await withTimeout(connectAsync({ connector, chainId: base.id }), 20_000);
-        toast.success(`${choice.name} connected`);
+        await connectInjected(choice);
         return;
       } catch (caught) {
         const message = failureMessage(caught, choice.name);
@@ -289,9 +320,30 @@ export default function CustomConnectButton() {
         }
       }
     }
+    if (phone) {
+      if (openInWalletApp(choice)) return;
+      await startQr(choice);
+      return;
+    }
     if (choice.id === 'coinbase') await startCoinbaseQr(choice);
     else await startQr(choice);
   }
+
+  useEffect(() => {
+    if (!uri || !qrWallet || !phone) return;
+    const link = walletConnectLink(qrWallet.id, uri);
+    if (link) openWalletUrl(link);
+  }, [uri, qrWallet, phone, device]);
+
+  useEffect(() => {
+    if (autoOpened.current || !restoreSettled || isConnected || !accepted) return;
+    const inApp = inAppWalletId();
+    if (!inApp || !installed.includes(WALLET_CHOICES.find((choice) => choice.id === inApp)?.desktopId ?? '')) return;
+    const choice = WALLET_CHOICES.find((item) => item.id === inApp);
+    if (!choice) return;
+    autoOpened.current = true;
+    void choose(choice);
+  }, [accepted, installed, isConnected, restoreSettled]);
 
   function switchNetwork() {
     if (network.pendingChainId) {
@@ -314,51 +366,50 @@ export default function CustomConnectButton() {
   return (
     <>
       {isConnected && address ? (
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
           <Button
             type="button"
             variant="outline"
-            className="h-10 gap-2 font-bold"
+            className="h-9 shrink-0 gap-1.5 px-2 text-xs font-bold sm:h-10 sm:px-3 sm:text-sm"
             title={network.pendingChainId ? 'Stop waiting for the wallet' : `Switch to ${chain?.id === base.id ? 'Ethereum' : 'Base'}`}
             onClick={switchNetwork}
           >
             {network.pendingChainId ? (
-              <span>Approve in wallet…</span>
+              <span>Approve…</span>
             ) : (
               <>
                 <span className={`h-2 w-2 rounded-full ${chain?.id === base.id || chain?.id === mainnet.id ? 'bg-blue-500' : 'bg-red-500'}`} />
-                <span className="hidden sm:inline">{chain?.id === base.id ? 'Base' : chain?.id === mainnet.id ? 'Ethereum' : 'Wrong network'}</span>
-                <span className="sm:hidden">{chain?.id === mainnet.id ? 'ETH' : 'Base'}</span>
-                <span aria-hidden className="text-muted-foreground">⇄</span>
+                <span>{chain?.id === base.id ? 'Base' : chain?.id === mainnet.id ? 'ETH' : '!'}</span>
+                <span aria-hidden className="hidden text-muted-foreground sm:inline">⇄</span>
               </>
             )}
           </Button>
-          <Button type="button" variant="outline" className="h-10 gap-2 font-bold" title="Copy address" onClick={() => void copyAddress()}>
-            <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            {`${address.slice(0, 6)}…${address.slice(-4)}`}
+          <Button type="button" variant="outline" className="h-9 min-w-0 shrink px-2 text-xs font-bold sm:h-10 sm:px-3 sm:text-sm" title="Copy address" onClick={() => void copyAddress()}>
+            <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+            <span className="truncate">{`${address.slice(0, 4)}…${address.slice(-4)}`}</span>
           </Button>
           <Button
             type="button"
             variant="outline"
-            className="h-10 font-bold"
+            className="hidden h-10 shrink-0 font-bold sm:inline-flex"
             onClick={() => void disconnectAsync().catch(() => disconnect())}
           >
             Disconnect
           </Button>
         </div>
       ) : !restoreSettled || status === 'reconnecting' ? (
-        <Button type="button" variant="outline" className="h-10 font-bold" disabled>
-          Restoring wallet…
+        <Button type="button" variant="outline" className="h-9 px-2 text-xs font-bold sm:h-10 sm:px-3 sm:text-sm" disabled>
+          Restoring…
         </Button>
       ) : (
-        <Button type="button" onClick={openFlow} className="h-10 bg-blue-600 font-bold text-white hover:bg-blue-700">
-          Connect Wallet
+        <Button type="button" onClick={openFlow} className="h-9 bg-blue-600 px-2.5 text-xs font-bold text-white hover:bg-blue-700 sm:h-10 sm:px-4 sm:text-sm">
+          Connect
         </Button>
       )}
 
       {showTerms && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
-          <Card className="w-full max-w-lg border-muted shadow-2xl dark:bg-zinc-950">
+        <div className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/80 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+          <Card className="max-h-[min(92dvh,100%)] w-full max-w-lg overflow-y-auto rounded-b-none border-muted pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl sm:rounded-xl dark:bg-zinc-950">
             <CardHeader className="border-b bg-muted/30 pb-4">
               <CardTitle className="text-2xl font-bold tracking-tight">
                 Welcome to Simple<span className="text-blue-500">BTC</span> Borrow
@@ -405,53 +456,104 @@ export default function CustomConnectButton() {
       )}
 
       {showWallets && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
-          <Card className="max-h-[90vh] w-full max-w-md overflow-y-auto border-muted shadow-2xl dark:bg-zinc-950">
+        <div className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/80 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+          <Card className="max-h-[min(92dvh,100%)] w-full max-w-md overflow-y-auto rounded-b-none border-muted pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl sm:rounded-xl dark:bg-zinc-950">
             <CardHeader className="border-b pb-4">
               <CardTitle className="text-xl font-bold">{qrWallet ? `Scan with ${qrWallet.name}` : 'Connect a wallet'}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 pt-4">
-              {!qrWallet && (
+              {!qrWallet && !phone && (
                 <>
                   <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted p-1">
                     {(['mobile', 'desktop'] as const).map((option) => (
                       <button
                         key={option}
                         type="button"
-                        className={`h-9 rounded-md text-sm font-bold ${device === option ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'}`}
+                        className={`h-11 rounded-md text-sm font-bold ${device === option ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'}`}
                         onClick={() => {
                           setDevice(option);
                           setError('');
                         }}
                       >
-                        {option === 'mobile' ? 'Mobile' : 'Desktop'}
+                        {option === 'mobile' ? 'Phone QR' : 'This browser'}
                       </button>
                     ))}
                   </div>
                   <p className="text-xs leading-relaxed text-muted-foreground">
                     {device === 'mobile'
-                      ? 'An installed wallet connects in this browser. Otherwise, scan the QR code with the phone app.'
-                      : 'Choose the wallet extension in this browser. If it is not installed, a mobile QR code opens instead.'}
+                      ? 'Scan the code with the wallet app on your phone.'
+                      : 'Use a wallet already in this browser. If it is missing, a phone QR code opens instead.'}
                   </p>
                 </>
               )}
+              {phone && !qrWallet && !handoff && (
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {inAppWalletId()
+                    ? 'This page is already inside a wallet. Tap that wallet to finish connecting.'
+                    : 'Tap a wallet to open it. Approve the connection, then this page continues automatically.'}
+                </p>
+              )}
               {error && <p className="rounded-md border border-red-500/40 bg-red-500/10 p-2 text-xs font-medium text-red-600 dark:text-red-400">{error}</p>}
-              {qrWallet ? (
+              {handoff && !qrWallet ? (
+                <div className="space-y-3">
+                  <p className="text-sm font-semibold">Opening {handoff.name}</p>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    The wallet app should open with this page. Approve the connection there. If nothing happened, tap Open again.
+                  </p>
+                  <Button
+                    type="button"
+                    className="h-11 w-full bg-blue-600 font-bold text-white hover:bg-blue-700"
+                    onClick={() => openWalletUrl(walletDappUrl(handoff.id))}
+                  >
+                    Open {handoff.name}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-11 w-full"
+                    onClick={() => {
+                      setHandoff(null);
+                      setPendingId(null);
+                    }}
+                  >
+                    Choose a different wallet
+                  </Button>
+                </div>
+              ) : qrWallet ? (
                 <div className="flex flex-col items-center gap-3">
-                  {isScannableUri(uri) ? <WalletQr uri={uri} /> : <p className="py-16 text-sm text-muted-foreground">Creating a secure connection code…</p>}
-                  <ol className="w-full list-decimal space-y-1 pl-4 text-xs leading-relaxed text-muted-foreground">
-                    <li>Open {qrWallet.name} on your phone.</li>
-                    <li>{qrWallet.id === 'coinbase' ? 'Tap the scan icon and scan this code.' : 'Use its scanner and scan this code.'}</li>
-                    <li>Approve the connection. It can use Base and Ethereum only.</li>
-                  </ol>
+                  {phone ? (
+                    <>
+                      <p className="py-6 text-center text-sm text-muted-foreground">Opening {qrWallet.name}…</p>
+                      {isScannableUri(uri) && (
+                        <Button
+                          type="button"
+                          className="h-11 w-full bg-blue-600 font-bold text-white hover:bg-blue-700"
+                          onClick={() => openWalletUrl(walletConnectLink(qrWallet.id, uri) || walletDappUrl(qrWallet.id))}
+                        >
+                          Open {qrWallet.name}
+                        </Button>
+                      )}
+                    </>
+                  ) : isScannableUri(uri) ? (
+                    <WalletQr uri={uri} />
+                  ) : (
+                    <p className="py-16 text-sm text-muted-foreground">Creating a secure connection code…</p>
+                  )}
+                  {!phone && (
+                    <ol className="w-full list-decimal space-y-1 pl-4 text-xs leading-relaxed text-muted-foreground">
+                      <li>Open {qrWallet.name} on your phone.</li>
+                      <li>{qrWallet.id === 'coinbase' ? 'Tap the scan icon and scan this code.' : 'Use its scanner and scan this code.'}</li>
+                      <li>Approve the connection. It can use Base and Ethereum only.</li>
+                    </ol>
+                  )}
                   <p className="text-[11px] leading-relaxed text-muted-foreground">
-                    The code is created in this browser. Closing this window cancels it.
+                    {phone ? 'If the wallet did not open, tap Open. Closing this window cancels the request.' : 'The code is created in this browser. Closing this window cancels it.'}
                   </p>
                 </div>
               ) : (
                 <div className="grid gap-2">
                   {visible.map((choice) => {
-                    const ready = device === 'desktop' && installed.includes(choice.desktopId);
+                    const ready = installed.includes(choice.desktopId) || inAppWalletId() === choice.id;
                     return (
                       <Button
                         key={choice.id}
@@ -463,20 +565,20 @@ export default function CustomConnectButton() {
                       >
                         <span>{choice.name}</span>
                         <span className="text-[10px] font-medium text-muted-foreground">
-                          {ready ? 'Installed' : device === 'mobile' ? 'QR code' : 'Extension'}
+                          {ready ? 'Installed' : phone ? 'Open app' : device === 'mobile' ? 'QR code' : 'Extension'}
                         </span>
                       </Button>
                     );
                   })}
-                  <Button type="button" variant="ghost" className="h-9 text-xs font-semibold" onClick={() => setMore((value) => !value)}>
+                  <Button type="button" variant="ghost" className="h-11 text-xs font-semibold" onClick={() => setMore((value) => !value)}>
                     {more ? 'Show Coinbase and MetaMask' : 'More wallets'}
                   </Button>
                 </div>
               )}
             </CardContent>
             <CardFooter className="justify-between border-t pt-4">
-              {qrWallet ? (
-                <Button variant="ghost" onClick={() => void stopQr()}>Back</Button>
+              {qrWallet || handoff ? (
+                <Button variant="ghost" onClick={() => { setHandoff(null); void stopQr(); }}>Back</Button>
               ) : <span />}
               <Button variant="ghost" onClick={() => { void stopQr(); setShowWallets(false); setError(''); }}>Close</Button>
             </CardFooter>

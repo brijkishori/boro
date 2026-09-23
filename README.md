@@ -48,6 +48,17 @@ The "Move BTC from Coinbase" button opens Coinbase's hosted transfer page. You s
    ```
 
 3. Restart `npm run dev`. Without the key, the button links to Coinbase's manual send guide instead.
+
+Loan email alerts use Gmail SMTP. Create a Google app password, then add:
+
+```bash
+GMAIL_USER=you@gmail.com
+GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
+ALERT_SIGNING_SECRET=long-random-string
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+The Loans page asks the wallet to sign, then sends a confirmation link. Production also needs `CRON_SECRET` and Upstash Redis so subscribers survive across serverless instances. Steps are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 4. Before production, add your domain to the Onramp domain allowlist in the CDP portal. The server sends Coinbase the visitor's IP from `x-real-ip`, so deploy behind a proxy that sets that header (Vercel does).
 
 Full production steps are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).

@@ -12,10 +12,12 @@ This guide covers a production deployment on Vercel, including the Coinbase Deve
 
 | Part | Where it runs | Secrets it needs |
 |---|---|---|
-| Pages (`/`, `/faq`, `/terms`, `/contact`) | Static files on Vercel's CDN | None |
-| `/api/rates` | Vercel serverless function | None (reads Morpho and Aave public APIs) |
+| Pages (`/`, `/loans`, `/faq`, `/terms`, `/contact`) | Static files on Vercel's CDN | None |
+| `/api/rates` | Vercel serverless function | None (reads Morpho, Aave, Compound, Spark, Moonwell) |
+| `/api/rates/history` | Vercel serverless function | Optional Upstash Redis for snapshots |
 | `/api/btc` | Vercel serverless function | None (reads mempool.space) |
 | `/api/onramp` | Vercel serverless function | `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET` |
+| `/api/alerts/*` | Vercel serverless functions | Gmail SMTP, signing secret, optional Redis |
 | `/.well-known/farcaster.json` | Vercel serverless function | None |
 | Wallet reads and transactions | The user's browser and wallet | Public RPC and WalletConnect IDs only |
 
@@ -33,6 +35,14 @@ The only real secret is the CDP key. It stays on the server: `/api/onramp` uses 
 | `CDP_API_KEY_SECRET` | For the Coinbase transfer | **Yes, sensitive** | `/api/onramp` | The key's `privateKey`, on one line |
 | `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | Recommended | No (public) | Wallet connect QR | Falls back to a built-in shared ID. Use your own for production. |
 | `NEXT_PUBLIC_ALCHEMY_KEY` | Optional | No (public) | RPC reads | Without it the app uses the public Base and Ethereum RPCs, which rate-limit under load. |
+| `GMAIL_USER` | For loan email alerts | Yes | `/api/alerts/*` | Full Gmail address that owns the app password |
+| `GMAIL_APP_PASSWORD` | For loan email alerts | **Yes, sensitive** | `/api/alerts/*` | 16-character Google app password (spaces optional) |
+| `ALERT_FROM_EMAIL` | Optional | No | `/api/alerts/*` | From address. Defaults to `GMAIL_USER` |
+| `ALERT_SIGNING_SECRET` | Recommended | **Yes, sensitive** | `/api/alerts/*` | HMAC secret for confirm/unsubscribe links. Falls back to the app password in development |
+| `NEXT_PUBLIC_APP_URL` | Recommended | No (public) | Confirm/unsubscribe links | Production origin, for example `https://boro-ruddy.vercel.app` |
+| `CRON_SECRET` | Production alerts | **Yes, sensitive** | `/api/alerts/check` | Vercel sends this as `Authorization: Bearer …` on the daily cron |
+| `UPSTASH_REDIS_REST_URL` | Production alerts | Yes | Alerts + rate history | Without Redis, subscribers and snapshots live only in one function instance |
+| `UPSTASH_REDIS_REST_TOKEN` | Production alerts | **Yes, sensitive** | Alerts + rate history | REST token from the same Upstash database |
 
 Rules:
 
@@ -246,7 +256,53 @@ Replace the URL if you use a custom domain.
 
 ---
 
-## 12. Local development with the key
+## 12. Gmail SMTP loan alerts
+
+The Loans page lets a connected wallet subscribe to email alerts. The wallet signs an EIP-191 message, then the owner confirms the address by opening a link in their inbox. Nothing is sent until that second step.
+
+Cadence:
+
+- Immediate, with a cooldown: health factor, liquidation distance, borrow-APR spike, refinance savings
+- Weekly digest (Monday morning in the subscriber's timezone), skipped when estimated weekly interest is under $1
+- Monthly statement on the 1st
+- Optional dollar-threshold interest notice
+
+1. Turn on 2-Step Verification on the Google account.
+2. Open [Google Account → App passwords](https://myaccount.google.com/apppasswords) and create a Mail app password.
+3. Add these Production (and local) variables:
+
+   ```bash
+   GMAIL_USER=you@gmail.com
+   GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
+   ALERT_FROM_EMAIL=you@gmail.com
+   ALERT_SIGNING_SECRET=long-random-string
+   NEXT_PUBLIC_APP_URL=https://boro-ruddy.vercel.app
+   CRON_SECRET=long-random-string
+   UPSTASH_REDIS_REST_URL=https://….upstash.io
+   UPSTASH_REDIS_REST_TOKEN=…
+   ```
+
+4. Get the Redis REST URL and token from Upstash (free tier is enough):
+   1. Open [console.upstash.com](https://console.upstash.com) and sign in with GitHub or email.
+   2. Click **Create Database** → **Redis**.
+   3. Name it `boro-alerts`. Region: **Washington, D.C. (iad)** or another US East region close to Vercel.
+   4. Keep the free/pay-as-you-go plan. TLS stays on. Create.
+   5. On the database page, open the **REST API** / **Details** card.
+   6. Copy **UPSTASH_REDIS_REST_URL** (`https://….upstash.io`) and **UPSTASH_REDIS_REST_TOKEN**.
+   7. Paste those into `.env.local` and into Vercel → Settings → Environment Variables (Production).
+   Without Redis, confirmations and subscribers disappear when a serverless instance recycles. Locally, an in-memory store is used if these two variables are missing.
+5. `vercel.json` already schedules `GET /api/alerts/check` daily at 13:00 UTC (about 9am Eastern). Vercel sends `Authorization: Bearer $CRON_SECRET` automatically when `CRON_SECRET` is set.
+6. Dry-run without sending mail:
+
+   ```bash
+   curl -H "Authorization: Bearer $CRON_SECRET" "https://boro-ruddy.vercel.app/api/alerts/check?dry=1"
+   ```
+
+Without `GMAIL_USER` and `GMAIL_APP_PASSWORD`, the Loans page shows that alerts are not configured and the subscribe button stays off.
+
+---
+
+## 13. Local development with the key
 
 ```bash
 # C:\CryptoApps\boro\.env.local   (ignored by git through .env* in .gitignore)
@@ -254,6 +310,10 @@ CDP_API_KEY_ID=your-dev-key-id
 CDP_API_KEY_SECRET=your-dev-key-private-key
 # NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=...
 # NEXT_PUBLIC_ALCHEMY_KEY=...
+# GMAIL_USER=you@gmail.com
+# GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
+# ALERT_SIGNING_SECRET=dev-only-secret
+# NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
-Restart `npm run dev` after editing. Locally the route sends Coinbase the documentation placeholder IP `192.0.2.1`, because there's no real client IP. That only happens outside production.
+Restart `npm run dev` after editing. Locally the Onramp route sends Coinbase the documentation placeholder IP `192.0.2.1`, because there's no real client IP. That only happens outside production.

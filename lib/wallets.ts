@@ -91,3 +91,64 @@ export function coinbaseSessionId() {
   if (typeof window === 'undefined') return '';
   return window.localStorage.getItem(`${COINBASE_STORAGE}session:id`) ?? '';
 }
+
+export function isPhone() {
+  if (typeof window === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/Android|iPhone|iPad|iPod|Mobile|IEMobile|Opera Mini/i.test(ua)) return true;
+  return navigator.maxTouchPoints > 1 && window.matchMedia('(pointer: coarse)').matches && window.innerWidth < 900;
+}
+
+export function inAppWalletId(): string | null {
+  if (typeof window === 'undefined') return null;
+  const ua = navigator.userAgent || '';
+  if (/CoinbaseWallet|CBWallet/i.test(ua)) return 'coinbase';
+  if (/MetaMaskMobile/i.test(ua)) return 'metaMask';
+  if (/Rainbow/i.test(ua)) return 'rainbow';
+  if (/TrustWallet|Trust\//i.test(ua)) return 'trustWallet';
+  if (/Phantom/i.test(ua)) return 'phantom';
+  if (/OKApp|OKX/i.test(ua) && /Mobile/i.test(ua)) return 'okxWallet';
+  if (/Zerion/i.test(ua)) return 'zerion';
+  return null;
+}
+
+export function walletDappUrl(choiceId: string, pageUrl = typeof window === 'undefined' ? '' : window.location.href) {
+  if (!pageUrl) return '';
+  const encoded = encodeURIComponent(pageUrl);
+  if (choiceId === 'coinbase') return `https://go.cb-w.com/dapp?cb_url=${encoded}`;
+  if (choiceId === 'metaMask') {
+    try {
+      const url = new URL(pageUrl);
+      return `https://metamask.app.link/dapp/${url.host}${url.pathname}${url.search}`;
+    } catch {
+      return '';
+    }
+  }
+  if (choiceId === 'trustWallet') return `https://link.trustwallet.com/open_url?coin_id=60&url=${encoded}`;
+  if (choiceId === 'rainbow') return `https://rnbwapp.com/`;
+  if (choiceId === 'phantom') return `https://phantom.app/ul/browse/${encoded}`;
+  if (choiceId === 'okxWallet') return `https://www.okx.com/download?deeplink=${encodeURIComponent(`okx://wallet/dapp/url?dappUrl=${pageUrl}`)}`;
+  if (choiceId === 'zerion') return `https://wallet.zerion.io/`;
+  if (choiceId === 'rabby') return `https://rabby.io/`;
+  if (choiceId === 'braveWallet') return '';
+  return '';
+}
+
+export function walletConnectLink(choiceId: string, uri: string) {
+  if (!isWalletConnectUri(uri)) return '';
+  const encoded = encodeURIComponent(uri);
+  if (choiceId === 'metaMask') return `https://metamask.app.link/wc?uri=${encoded}`;
+  if (choiceId === 'rainbow') return `https://rnbwapp.com/wc?uri=${encoded}`;
+  if (choiceId === 'trustWallet') return `https://link.trustwallet.com/wc?uri=${encoded}`;
+  if (choiceId === 'coinbase') return `https://go.cb-w.com/wc?uri=${encoded}`;
+  if (choiceId === 'zerion') return `https://wallet.zerion.io/wc?uri=${encoded}`;
+  if (choiceId === 'okxWallet') return `https://www.okx.com/download?deeplink=${encodeURIComponent(`okx://wallet/dapp/url?dappUrl=${uri}`)}`;
+  if (choiceId === 'phantom') return `https://phantom.app/ul/v1/connect?app_url=${encodeURIComponent(typeof window === 'undefined' ? '' : window.location.origin)}`;
+  return uri;
+}
+
+export function openWalletUrl(url: string) {
+  if (!url || typeof window === 'undefined') return false;
+  window.location.assign(url);
+  return true;
+}

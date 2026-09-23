@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAccount, useReadContract, useReadContracts } from 'wagmi';
-import { formatUnits, maxUint256 } from 'viem';
+import { maxUint256 } from 'viem';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import UsdAmountField from '@/components/UsdAmountField';
@@ -10,20 +10,22 @@ import WrongNetworkActions from '@/components/WrongNetworkActions';
 import GasNotice from '@/components/GasNotice';
 import FeeBreakdown from '@/components/FeeBreakdown';
 import { GAS_UNITS, useGasCheck } from '@/components/useGasCheck';
-import { aavePoolAbi, erc20Abi, morphoAbi, oracleAbi } from '@/lib/abi';
+import { usePosition } from '@/components/usePosition';
+import { adapterFor, approveCall } from '@/lib/adapters';
+import { erc20Abi } from '@/lib/abi';
 import { approvalStep, formatToken, formatUsd, formatUsdExact, tokenAmountUsd } from '@/lib/amount';
 import {
-  MORPHO_BLUE,
   chainLabel,
   isChainId,
   isVenueSafe,
-  morphoParams,
   venueOnChain,
   venueSpender,
   type Venue,
 } from '@/lib/protocol';
-import { aaveSafeWithdraw, morphoDebtAssets, morphoSafeWithdraw, withRepayBuffer } from '@/lib/risk';
 import { useSendTx } from './useSendTx';
+import { useAudit } from './useAudit';
+import { LoanLedger } from './LoanLedger';
+import { asBig, episodeKey, findOpenEpisode, formatDuration } from '@/lib/audit';
 
 export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Venue | null; venues?: Venue[]; onSelect?: (id: string) => void }) {
   const { address, chain, isConnected } = useAccount();
@@ -34,14 +36,14 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
   const [maxRepay, setMaxRepay] = useState(false);
   const [partialPin, setPartialPin] = useState<bigint | undefined>();
   const { send, isBusy, isAwaitingWallet, confirmed } = useSendTx();
+  const { episodes, events, seedOpen } = useAudit(address);
 
   const safe = quote !== null && isVenueSafe(quote) && quote.action === 'borrow';
-  const spender = safe && quote ? venueSpender(quote) : null;
-  const morpho = safe && quote?.protocol === 'morpho' ? quote.morpho : undefined;
-  const aave = safe && quote?.protocol === 'aave' ? quote.aave : undefined;
+  const spender = safe && quote ? venueSpender(quote, 'loan') : null;
   const enabled = Boolean(address && safe);
   const gas = useGasCheck(quote?.chainId, GAS_UNITS.write);
   const marketChainId = quote?.chainId;
+  const { snapshot, refetch: refetchPosition } = usePosition(safe ? quote : null, address, enabled);
 
   const { data: usdcBalance, isError: usdcError, refetch: refetchUsdc } = useReadContract({
     address: quote?.loanAddress,
@@ -49,7 +51,7 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
     abi: erc20Abi,
     functionName: 'balanceOf',
     args: address ? [address] : undefined,
-    query: { enabled, refetchInterval: 20_000 },
+    query: { enabled, refetchInterval: 20_000, placeholderData: (previous) => previous },
   });
   const { data: allowance, refetch: refetchAllowance } = useReadContract({
     address: quote?.loanAddress,
@@ -57,66 +59,24 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
     abi: erc20Abi,
     functionName: 'allowance',
     args: address && spender ? [address, spender] : undefined,
-    query: { enabled: Boolean(enabled && spender), refetchInterval: 20_000 },
+    query: { enabled: Boolean(enabled && spender), refetchInterval: 20_000, placeholderData: (previous) => previous },
   });
-  const { data: position, refetch: refetchPosition } = useReadContract({
-    address: MORPHO_BLUE,
-    chainId: marketChainId,
-    abi: morphoAbi,
-    functionName: 'position',
-    args: address && morpho ? [morpho.marketId, address] : undefined,
-    query: { enabled: Boolean(enabled && morpho), refetchInterval: 20_000 },
-  });
-  const { data: market, refetch: refetchMarket } = useReadContract({
-    address: MORPHO_BLUE,
-    chainId: marketChainId,
-    abi: morphoAbi,
-    functionName: 'market',
-    args: morpho ? [morpho.marketId] : undefined,
-    query: { enabled: Boolean(enabled && morpho), refetchInterval: 20_000 },
-  });
-  const { data: oraclePrice } = useReadContract({
-    address: morpho?.oracle,
-    chainId: marketChainId,
-    abi: oracleAbi,
-    functionName: 'price',
-    query: { enabled: Boolean(enabled && morpho), refetchInterval: 20_000 },
-  });
-  const { data: variableDebt, refetch: refetchDebt } = useReadContract({
-    address: aave?.variableDebtToken,
-    chainId: marketChainId,
-    abi: erc20Abi,
-    functionName: 'balanceOf',
-    args: address ? [address] : undefined,
-    query: { enabled: Boolean(enabled && aave), refetchInterval: 20_000 },
-  });
-  const { data: account, refetch: refetchAccount } = useReadContract({
-    address: aave?.pool,
-    chainId: marketChainId,
-    abi: aavePoolAbi,
-    functionName: 'getUserAccountData',
-    args: address ? [address] : undefined,
-    query: { enabled: Boolean(enabled && aave), refetchInterval: 20_000 },
-  });
-  const { data: collateralBalance, refetch: refetchCollateral } = useReadContract({
-    address: aave?.aToken,
-    chainId: marketChainId,
-    abi: erc20Abi,
-    functionName: 'balanceOf',
-    args: address ? [address] : undefined,
-    query: { enabled: Boolean(enabled && aave), refetchInterval: 20_000 },
-  });
-
-  const siblings = aave && quote
-    ? venues.filter((venue) => venue.protocol === 'aave' && venue.chainId === quote.chainId && venue.id !== quote.id && venue.aave)
+  const lastAllowance = useRef(0n);
+  if (typeof allowance === 'bigint') lastAllowance.current = allowance;
+  const ledgerKey = quote && address ? episodeKey(address, quote) : '';
+  const episode = ledgerKey ? findOpenEpisode(episodes, ledgerKey) : null;
+  const closedEpisode = ledgerKey ? episodes.find((item) => item.key === ledgerKey && item.status === 'closed') ?? null : null;
+  const lastRepay = events.find((event) => event.action === 'repay' && event.episodeKey === ledgerKey);
+  const siblings = quote?.aave
+    ? venues.filter((venue) => venue.aave && venue.chainId === quote.chainId && venue.id !== quote.id)
     : [];
   const { data: siblingBalances } = useReadContracts({
     contracts: address
       ? siblings.map((venue) => ({ address: venue.aave!.aToken, abi: erc20Abi, functionName: 'balanceOf' as const, args: [address] as const, chainId: venue.chainId }))
       : [],
-    query: { enabled: Boolean(address && siblings.length > 0 && collateralBalance === 0n) },
+    query: { enabled: Boolean(address && siblings.length > 0 && snapshot.collateral === 0n) },
   });
-  const heldElsewhere = collateralBalance === 0n
+  const heldElsewhere = snapshot.collateral === 0n
     ? siblings.find((_, index) => {
         const value = siblingBalances?.[index]?.result;
         return typeof value === 'bigint' && value > 0n;
@@ -124,14 +84,13 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
     : undefined;
 
   useEffect(() => {
-    if (heldElsewhere && onSelect) onSelect(heldElsewhere.id);
-  }, [heldElsewhere, onSelect]);
+    if (heldElsewhere && snapshot.ready && snapshot.collateral === 0n && snapshot.debt === 0n && onSelect) {
+      onSelect(heldElsewhere.id);
+    }
+  }, [heldElsewhere, onSelect, snapshot.collateral, snapshot.debt, snapshot.ready]);
 
-  const debt = morpho
-    ? morphoDebtAssets(position?.[1] ?? 0n, market?.[2] ?? 0n, market?.[3] ?? 0n)
-    : (variableDebt ?? 0n);
-  const debtCap = account ? (account[1] / 100n) * 105n / 100n : debt;
-  const cappedDebt = aave && debt > debtCap ? debtCap : debt;
+  const debt = snapshot.debt;
+  const cappedDebt = debt;
 
   useEffect(() => {
     if (!confirmed) return;
@@ -148,92 +107,63 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
     void refetchUsdc();
     void refetchAllowance();
     void refetchPosition();
-    void refetchMarket();
-    void refetchDebt();
-    void refetchAccount();
-    void refetchCollateral();
-  }, [confirmed, refetchAccount, refetchAllowance, refetchCollateral, refetchDebt, refetchMarket, refetchPosition, refetchUsdc]);
+  }, [confirmed, refetchAllowance, refetchPosition, refetchUsdc]);
+
+  useEffect(() => {
+    if (!quote || snapshot.debt <= 0n) return;
+    seedOpen([{ venue: quote, snapshot }]);
+  }, [quote, seedOpen, snapshot]);
 
   if (!quote || !safe || !spender) {
     return <p className="text-sm text-muted-foreground">Choose the borrow market you want to repay.</p>;
   }
 
   const wallet = usdcBalance ?? 0n;
-  const collateral = morpho ? (position?.[2] ?? 0n) : (collateralBalance ?? 0n);
-  const neededApproval = maxRepay || (repayAmount !== null && repayAmount >= cappedDebt) ? withRepayBuffer(cappedDebt) : (repayAmount ?? 0n);
-  const step = approvalStep(allowance ?? 0n, neededApproval);
+  const collateral = snapshot.collateral;
+  const closingDebt = maxRepay || (repayAmount !== null && cappedDebt > 0n && repayAmount >= cappedDebt);
+  const neededApproval = closingDebt ? cappedDebt : (repayAmount ?? 0n);
+  const approveAmount = closingDebt ? maxUint256 : neededApproval;
+  const step = approvalStep(typeof allowance === 'bigint' ? allowance : lastAllowance.current, neededApproval);
   const wrongChain = isConnected && chain?.id !== quote.chainId;
   const connectedChainId = chain?.id ?? 0;
   const walletChainId = isChainId(connectedChainId) ? connectedChainId : null;
   const alternate = wrongChain && walletChainId ? venueOnChain(venues, quote, walletChainId) : null;
   const repayTooBig = repayAmount !== null && repayAmount > wallet;
-  const shares = position?.[1] ?? 0n;
+  const shares = snapshot.extra?.shares ?? 0n;
   const shortfall = cappedDebt > wallet ? cappedDebt - wallet : 0n;
-  const withdrawMax = morpho
-    ? morphoSafeWithdraw(collateral, debt, oraclePrice ?? 0n, BigInt(morpho.lltv))
-    : aaveSafeWithdraw(collateral, quote.assetDecimals, quote.priceUsd, account?.[0] ?? 0n, account?.[1] ?? 0n, account?.[4] ?? 0n);
-  const hasDebt = morpho ? shares > 0n : Boolean(account && account[1] > 0n);
+  const withdrawMax = snapshot.withdrawMax;
+  const hasDebt = snapshot.debt > 0n;
   const withdrawTooBig = withdrawAmount !== null && withdrawAmount > withdrawMax;
 
+  function ledger(amount: bigint, amountKind: 'loan' | 'asset' = 'loan', closing = false) {
+    return {
+      wallet: address!,
+      venue: quote!,
+      amount,
+      amountUsd: tokenAmountUsd(amount, amountKind === 'loan' ? quote!.loanDecimals : quote!.assetDecimals, amountKind === 'loan' ? 1 : quote!.priceUsd),
+      amountKind,
+      debt: snapshot.debt,
+      collateral: snapshot.collateral,
+      healthFactor: snapshot.healthFactor,
+      closing,
+    };
+  }
+
   async function approve(amount: bigint) {
-    await send(amount === 0n ? 'reset' : 'approve', {
-      address: quote!.loanAddress,
-      abi: erc20Abi,
-      functionName: 'approve',
-      args: [spender!, amount],
-      chainId: quote!.chainId,
-    });
+    await send(amount === 0n ? 'reset' : 'approve', approveCall(quote!, spender!, amount, 'loan'), ledger(neededApproval));
   }
 
   async function repay() {
-    if (!address) return;
-    const params = morphoParams(quote!);
-    if (morpho && params) {
-      const full = maxRepay || (repayAmount !== null && repayAmount >= cappedDebt);
-      await send('repay', {
-        address: MORPHO_BLUE,
-        abi: morphoAbi,
-        functionName: 'repay',
-        args: [params, full ? 0n : (repayAmount ?? 0n), full ? shares : 0n, address, '0x'],
-        chainId: quote!.chainId,
-      });
-      return;
-    }
-    if (aave && repayAmount && repayAmount > 0n) {
-      const full = (maxRepay || repayAmount >= cappedDebt) && wallet > cappedDebt + cappedDebt / 10_000n;
-      const amount = full ? maxUint256 : repayAmount;
-      await send('repay', {
-        address: aave.pool,
-        abi: aavePoolAbi,
-        functionName: 'repay',
-        args: [quote!.loanAddress, amount, 2n, address],
-        chainId: quote!.chainId,
-      });
-    }
+    if (!address || !repayAmount || repayAmount <= 0n) return;
+    const full = (maxRepay || repayAmount >= cappedDebt) && wallet > cappedDebt + cappedDebt / 10_000n;
+    const call = adapterFor(quote!).buildRepay(quote!, address, repayAmount, full, { shares });
+    if (call) await send('repay', call, ledger(repayAmount, 'loan', full));
   }
 
   async function withdraw() {
-    if (!address) return;
-    const params = morphoParams(quote!);
-    if (morpho && params && withdrawAmount && withdrawAmount > 0n && withdrawAmount <= withdrawMax) {
-      await send('withdraw', {
-        address: MORPHO_BLUE,
-        abi: morphoAbi,
-        functionName: 'withdrawCollateral',
-        args: [params, withdrawAmount, address, address],
-        chainId: quote!.chainId,
-      });
-      return;
-    }
-    if (aave && withdrawAmount && withdrawAmount > 0n && withdrawAmount <= withdrawMax) {
-      await send('withdraw', {
-        address: aave.pool,
-        abi: aavePoolAbi,
-        functionName: 'withdraw',
-        args: [quote!.assetAddress, withdrawAmount, address],
-        chainId: quote!.chainId,
-      });
-    }
+    if (!address || !withdrawAmount || withdrawAmount <= 0n || withdrawAmount > withdrawMax) return;
+    const call = adapterFor(quote!).buildWithdraw(quote!, address, withdrawAmount, 'borrow', { shares });
+    if (call) await send('withdraw', call, ledger(withdrawAmount, 'asset'));
   }
 
   return (
@@ -255,6 +185,25 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
               </>
             )}
           </div>
+          {(cappedDebt > 0n || closedEpisode) && (
+            <div className="rounded-lg border px-3 py-2">
+              <p className="mb-2 text-[10px] font-semibold uppercase text-muted-foreground">Principal vs interest</p>
+              {cappedDebt > 0n ? (
+                <LoanLedger episode={episode} debt={cappedDebt} decimals={quote.loanDecimals} compact />
+              ) : closedEpisode ? (
+                <p className="text-xs font-semibold">
+                  This loan is closed. Interest paid over {formatDuration(closedEpisode.openedAt, closedEpisode.closedAt)}:{' '}
+                  {formatToken(asBig(closedEpisode.interestPaid), quote.loanDecimals)} USDC
+                </p>
+              ) : null}
+              {lastRepay?.interestPaid && lastRepay.principalPaid && (
+                <p className="mt-2 text-[11px] text-muted-foreground">
+                  Last repay: {formatToken(asBig(lastRepay.interestPaid), quote.loanDecimals)} USDC interest, {formatToken(asBig(lastRepay.principalPaid), quote.loanDecimals)} USDC principal
+                  {lastRepay.closing ? ' · loan closed' : ''}
+                </p>
+              )}
+            </div>
+          )}
           <UsdAmountField
             label="Repay USDC"
             symbol="USDC"
@@ -265,7 +214,7 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
             percents={[25, 50, 75, 100]}
             percentLabel={(percent) => (percent === 100 ? 'Clear debt' : `${percent}%`)}
             epoch={repayEpoch}
-            pinned={maxRepay ? cappedDebt : partialPin}
+            pinned={maxRepay ? undefined : partialPin}
             invalid={repayTooBig}
             disabled={cappedDebt === 0n}
             onAmount={setRepayAmount}
@@ -293,8 +242,8 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
                 : ` Add USDC on ${chainLabel(quote.chainId)} to repay.`}
             </p>
           )}
-          {aave && (
-            <p className="text-xs text-muted-foreground">Pool debt {formatUsd(Number(formatUnits(account?.[1] ?? 0n, 8)))}</p>
+          {(quote.protocol === 'aave' || quote.protocol === 'spark') && (
+            <p className="text-xs text-muted-foreground">Pool debt {formatUsd(tokenAmountUsd(cappedDebt, quote.loanDecimals, 1) ?? 0)}</p>
           )}
           {!isConnected ? (
             <Button className="h-12 w-full" disabled>Connect a wallet to continue</Button>
@@ -309,12 +258,10 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
             <GasNotice chainId={quote.chainId} symbol={'USDC'} neededEth={gas.neededEth} balanceEth={gas.balanceEth} />
           ) : repayTooBig ? (
             <Button className="h-12 w-full" disabled>Not enough USDC</Button>
-          ) : step === 'reset' ? (
-            <Button className="h-12 w-full bg-indigo-600 text-white" disabled={isBusy} onClick={() => void approve(0n)}>{isAwaitingWallet ? 'Confirm in wallet…' : isBusy ? 'Confirming…' : 'Reset USDC approval'}</Button>
           ) : step === 'approve' ? (
-            <Button className="h-12 w-full bg-indigo-600 text-white" disabled={isBusy || neededApproval === 0n} onClick={() => void approve(neededApproval)}>{isAwaitingWallet ? 'Confirm in wallet…' : isBusy ? 'Confirming…' : 'Approve USDC'}</Button>
+            <Button className="h-12 w-full bg-indigo-600 text-white" disabled={isBusy || neededApproval === 0n} onClick={() => void approve(approveAmount)}>{isAwaitingWallet ? 'Confirm in wallet…' : isBusy ? 'Confirming…' : 'Approve USDC'}</Button>
           ) : (
-            <Button className="h-12 w-full bg-blue-600 text-white" disabled={isBusy || cappedDebt === 0n || !repayAmount || repayAmount <= 0n || (Boolean(aave) && !account)} onClick={() => void repay()}>
+            <Button className="h-12 w-full bg-blue-600 text-white" disabled={isBusy || cappedDebt === 0n || !repayAmount || repayAmount <= 0n} onClick={() => void repay()}>
               {isAwaitingWallet ? 'Confirm in wallet…' : isBusy ? 'Confirming…' : maxRepay ? 'Repay full debt' : 'Repay'}
             </Button>
           )}
@@ -325,7 +272,7 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
               interest={{ apr: quote.borrowApr, principalUsd: tokenAmountUsd(cappedDebt, quote.loanDecimals, 1) ?? 0, label: 'Interest while debt stays open' }}
             />
           )}
-          {aave && <p className="text-[11px] leading-relaxed text-muted-foreground">Aave debt is shared by the whole pool. The repay amount is capped by the pool&apos;s reported debt.</p>}
+          {(quote.protocol === 'aave' || quote.protocol === 'spark') && <p className="text-[11px] leading-relaxed text-muted-foreground">Shared-pool debt is reported for the whole account on this network. The repay amount is capped by that reported debt.</p>}
         </CardContent>
       </Card>
 

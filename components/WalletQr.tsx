@@ -27,13 +27,13 @@ export default function WalletQr({ uri }: { uri: string }) {
     };
   }, [uri]);
 
-  if (!src) return <div className="h-80 w-80 animate-pulse rounded-2xl bg-white" />;
+  if (!src) return <div className="aspect-square w-full max-w-[min(20rem,calc(100vw-5rem))] animate-pulse rounded-2xl bg-white" />;
 
   return (
-    <div className="rounded-2xl bg-white p-3">
+    <div className="w-full max-w-[min(20rem,calc(100vw-5rem))] rounded-2xl bg-white p-3">
       {/* Local data URL only. The pairing secret is not sent to a QR service or shown as text. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={src} alt="Wallet connection QR code" width={320} height={320} className="h-80 w-80" />
+      <img src={src} alt="Wallet connection QR code" width={320} height={320} className="h-auto w-full" />
     </div>
   );
 }

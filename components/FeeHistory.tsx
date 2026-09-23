@@ -31,7 +31,9 @@ export default function FeeHistory() {
             </div>
           </div>
         ))}
-        <p className="text-[11px] text-muted-foreground">Dollar values use the ETH price when each transaction confirmed. Saved in this browser only.</p>
+        <p className="text-[11px] text-muted-foreground">
+          Dollar values use the ETH price when each transaction confirmed. Open <a className="underline" href="/loans">Loans</a> for principal, interest, and the full audit (saved on the server when Redis is configured).
+        </p>
         <Button variant="outline" size="sm" className="h-8 text-xs" onClick={clearFees}>Clear list</Button>
       </div>
     </details>

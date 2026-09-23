@@ -40,10 +40,10 @@ export default function ContactPage() {
   };
 
   return (
-    <div className="max-w-2xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 sm:space-y-8">
       
-      <div className="text-center space-y-4 mb-8">
-        <h1 className="text-4xl font-bold tracking-tight">
+      <div className="mb-6 space-y-3 text-center sm:mb-8 sm:space-y-4">
+        <h1 className="text-2xl font-bold tracking-tight sm:text-4xl">
           Get in <span className="text-blue-600 dark:text-blue-500">Touch</span>
         </h1>
         <p className="text-muted-foreground text-lg">

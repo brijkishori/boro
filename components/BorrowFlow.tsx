@@ -12,22 +12,21 @@ import GasNotice from '@/components/GasNotice';
 import FeeBreakdown from '@/components/FeeBreakdown';
 import CoinbaseTransferButton from '@/components/CoinbaseTransferButton';
 import { GAS_UNITS, useGasCheck } from '@/components/useGasCheck';
-import { aavePoolAbi, erc20Abi, morphoAbi, oracleAbi } from '@/lib/abi';
+import { usePosition } from '@/components/usePosition';
+import { adapterFor, approveCall } from '@/lib/adapters';
+import { erc20Abi } from '@/lib/abi';
 import { approvalStep, formatToken, formatUsd, formatUsdExact, tokenAmountUsd, tokenPriceUsd } from '@/lib/amount';
 import {
-  MORPHO_BLUE,
   chainLabel,
   isChainId,
   isVenueSafe,
   sameAssetOnOtherChain,
-  morphoParams,
   protocolLabel,
   venueConfidence,
   venueOnChain,
   venueSpender,
   type Venue,
 } from '@/lib/protocol';
-import { applySafetyBuffer, morphoCollateralToLoan, morphoDebtAssets, morphoMaxBorrowAssets } from '@/lib/risk';
 import { useSendTx } from './useSendTx';
 
 const RATE_MAX_AGE_MS = 3 * 60_000;
@@ -43,12 +42,11 @@ export default function BorrowFlow({ quote, fetchedAt, venues = [], onSelect }: 
 
   const safe = quote !== null && isVenueSafe(quote) && quote.action === 'borrow';
   const spender = safe && quote ? venueSpender(quote) : null;
-  const morpho = safe && quote?.protocol === 'morpho' ? quote.morpho : undefined;
-  const aave = safe && quote?.protocol === 'aave' ? quote.aave : undefined;
   const enabled = Boolean(address && safe);
   const gas = useGasCheck(quote?.chainId, GAS_UNITS.write);
   const marketChainId = quote?.chainId;
   const otherAsset = quote ? sameAssetOnOtherChain(quote.chainId, quote.assetSymbol) : null;
+  const { snapshot, refetch: refetchPosition } = usePosition(safe ? quote : null, address, enabled);
 
   const { data: balance, isError: balanceError, refetch: refetchBalance } = useReadContract({
     address: quote?.assetAddress,
@@ -74,55 +72,11 @@ export default function BorrowFlow({ quote, fetchedAt, venues = [], onSelect }: 
     args: address && spender ? [address, spender] : undefined,
     query: { enabled: Boolean(enabled && spender), refetchInterval: 20_000 },
   });
-  const { data: position, refetch: refetchPosition } = useReadContract({
-    address: MORPHO_BLUE,
-    chainId: marketChainId,
-    abi: morphoAbi,
-    functionName: 'position',
-    args: address && morpho ? [morpho.marketId, address] : undefined,
-    query: { enabled: Boolean(enabled && morpho), refetchInterval: 20_000 },
-  });
-  const { data: market, refetch: refetchMarket } = useReadContract({
-    address: MORPHO_BLUE,
-    chainId: marketChainId,
-    abi: morphoAbi,
-    functionName: 'market',
-    args: morpho ? [morpho.marketId] : undefined,
-    query: { enabled: Boolean(enabled && morpho), refetchInterval: 20_000 },
-  });
-  const { data: oraclePrice, refetch: refetchOracle } = useReadContract({
-    address: morpho?.oracle,
-    chainId: marketChainId,
-    abi: oracleAbi,
-    functionName: 'price',
-    query: { enabled: Boolean(enabled && morpho), refetchInterval: 20_000 },
-  });
-  const { data: account, refetch: refetchAccount } = useReadContract({
-    address: aave?.pool,
-    chainId: marketChainId,
-    abi: aavePoolAbi,
-    functionName: 'getUserAccountData',
-    args: address ? [address] : undefined,
-    query: { enabled: Boolean(enabled && aave), refetchInterval: 20_000 },
-  });
-  const { data: aTokenBalance, refetch: refetchAToken } = useReadContract({
-    address: aave?.aToken,
-    chainId: marketChainId,
-    abi: erc20Abi,
-    functionName: 'balanceOf',
-    args: address ? [address] : undefined,
-    query: { enabled: Boolean(enabled && aave), refetchInterval: 20_000 },
-  });
-
   function refetchAll() {
     void refetchBalance();
     void refetchOther();
     void refetchAllowance();
     void refetchPosition();
-    void refetchMarket();
-    void refetchOracle();
-    void refetchAccount();
-    void refetchAToken();
   }
 
   useEffect(() => {
@@ -147,97 +101,67 @@ export default function BorrowFlow({ quote, fetchedAt, venues = [], onSelect }: 
   const walletBalance = balance ?? 0n;
   const currentAllowance = allowance ?? 0n;
   const price = tokenPriceUsd(quote.assetSymbol, quote.priceUsd);
-  const existingCollateral = morpho ? (position?.[2] ?? 0n) : (aTokenBalance ?? 0n);
-  const existingDebt = morpho
-    ? morphoDebtAssets(position?.[1] ?? 0n, market?.[2] ?? 0n, market?.[3] ?? 0n)
-    : 0n;
-  const oracle = oraclePrice ?? 0n;
-  const onChainBorrowRoom = morpho
-    ? applySafetyBuffer(morphoMaxBorrowAssets(existingCollateral, oracle, BigInt(morpho.lltv)))
-    : applySafetyBuffer((account?.[2] ?? 0n) / 100n);
-  const borrowRoom = onChainBorrowRoom > existingDebt ? onChainBorrowRoom - existingDebt : 0n;
-  const collateralValue = morpho ? morphoCollateralToLoan(existingCollateral, oracle) : 0n;
-  const ltv = collateralValue > 0n ? Number((existingDebt * 10_000n) / collateralValue) / 100 : 0;
+  const existingCollateral = snapshot.collateral;
+  const existingDebt = snapshot.debt;
+  const borrowRoom = snapshot.borrowRoom;
+  const ltv = snapshot.ltv * 100;
   const stale = Date.now() - fetchedAt > RATE_MAX_AGE_MS;
   const wrongChain = isConnected && chain?.id !== quote.chainId;
   const connectedChainId = chain?.id ?? 0;
   const walletChainId = isChainId(connectedChainId) ? connectedChainId : null;
   const alternate = wrongChain && walletChainId ? venueOnChain(venues, quote, walletChainId) : null;
-  const marketMissing = Boolean(morpho && market && market[4] === 0n);
-  const oracleReady = !morpho || oracle > 0n;
+  const marketMissing = false;
+  const oracleReady = snapshot.ready;
   const supplyTooBig = supplyAmount !== null && supplyAmount > walletBalance;
+  const minBorrow = snapshot.extra?.minBorrow ?? 0n;
+  const belowMin = borrowAmount !== null && minBorrow > 0n && borrowAmount < minBorrow;
   const borrowTooBig = borrowAmount !== null && borrowAmount > borrowRoom;
   const step = approvalStep(currentAllowance, supplyAmount ?? 0n);
   const pendingSupply = supplyAmount !== null && supplyAmount > 0n;
+  const needsEnter = quote.protocol === 'moonwell' && snapshot.extra?.enteredMarket === false && existingCollateral > 0n;
 
   const confidence = venueConfidence(quote);
   const collateralTokens = Number(formatUnits(existingCollateral, quote.assetDecimals));
   const collateralUsd = tokenAmountUsd(existingCollateral, quote.assetDecimals, price);
   const supplyUsd = supplyAmount && supplyAmount > 0n ? tokenAmountUsd(supplyAmount, quote.assetDecimals, price) : null;
   const estimatedBorrowUsd = supplyUsd !== null ? supplyUsd * quote.maxLtv * 0.9 : null;
-  const debtUsd = morpho
-    ? Number(formatUnits(existingDebt, quote.loanDecimals))
-    : Number(formatUnits(account?.[1] ?? 0n, 8));
-  const liquidationPrice = collateralTokens > 0 && debtUsd > 0 ? debtUsd / (collateralTokens * quote.maxLtv) : 0;
+  const debtUsd = Number(formatUnits(existingDebt, quote.loanDecimals));
+  const liquidationPrice = snapshot.liquidationPrice;
   const simulatedPrice = quote.priceUsd * (1 - drop / 100);
   const simulatedLtv = collateralTokens > 0 && simulatedPrice > 0 ? (debtUsd / (collateralTokens * simulatedPrice)) * 100 : 0;
 
+  function ledger(amount: bigint, amountKind: 'loan' | 'asset' = 'asset') {
+    return {
+      wallet: address!,
+      venue: quote!,
+      amount,
+      amountUsd: tokenAmountUsd(amount, amountKind === 'loan' ? quote!.loanDecimals : quote!.assetDecimals, amountKind === 'loan' ? 1 : price),
+      amountKind,
+      debt: snapshot.debt,
+      collateral: snapshot.collateral,
+      healthFactor: snapshot.healthFactor,
+    };
+  }
+
   async function approve(amount: bigint) {
-    await send(amount === 0n ? 'reset' : 'approve', {
-      address: quote!.assetAddress,
-      abi: erc20Abi,
-      functionName: 'approve',
-      args: [spender!, amount],
-      chainId: quote!.chainId,
-    });
+    await send(amount === 0n ? 'reset' : 'approve', approveCall(quote!, spender!, amount), ledger(amount));
   }
 
   async function supply() {
     if (!address || !supplyAmount || supplyAmount <= 0n) return;
-    const params = morphoParams(quote!);
-    if (quote!.protocol === 'morpho' && params) {
-      await send('supply', {
-        address: MORPHO_BLUE,
-        abi: morphoAbi,
-        functionName: 'supplyCollateral',
-        args: [params, supplyAmount, address, '0x'],
-        chainId: quote!.chainId,
-      });
-      return;
-    }
-    if (aave) {
-      await send('supply', {
-        address: aave.pool,
-        abi: aavePoolAbi,
-        functionName: 'supply',
-        args: [quote!.assetAddress, supplyAmount, address, 0],
-        chainId: quote!.chainId,
-      });
-    }
+    const call = adapterFor(quote!).buildSupply(quote!, address, supplyAmount, 'borrow');
+    if (call) await send('supply', call, ledger(supplyAmount));
   }
 
   async function borrow() {
     if (!address || !borrowAmount || borrowAmount <= 0n || borrowAmount > borrowRoom) return;
-    const params = morphoParams(quote!);
-    if (quote!.protocol === 'morpho' && params) {
-      await send('borrow', {
-        address: MORPHO_BLUE,
-        abi: morphoAbi,
-        functionName: 'borrow',
-        args: [params, borrowAmount, 0n, address, address],
-        chainId: quote!.chainId,
-      });
-      return;
+    const adapter = adapterFor(quote!);
+    if (needsEnter && adapter.buildEnterMarket) {
+      const enter = adapter.buildEnterMarket(quote!);
+      if (enter) await send('supply', enter, ledger(0n));
     }
-    if (aave) {
-      await send('borrow', {
-        address: aave.pool,
-        abi: aavePoolAbi,
-        functionName: 'borrow',
-        args: [quote!.loanAddress, borrowAmount, 2n, 0, address],
-        chainId: quote!.chainId,
-      });
-    }
+    const call = adapter.buildBorrow(quote!, address, borrowAmount);
+    if (call) await send('borrow', call, ledger(borrowAmount, 'loan'));
   }
 
   return (
@@ -278,9 +202,9 @@ export default function BorrowFlow({ quote, fetchedAt, venues = [], onSelect }: 
 
       <div className="grid grid-cols-2 gap-3">
         <Card><CardContent className="p-3"><p className="text-[10px] font-semibold uppercase text-muted-foreground">Supplied on {protocolLabel(quote.protocol)}</p><p className="text-lg font-bold">{formatToken(existingCollateral, quote.assetDecimals)} {quote.assetSymbol}</p>{existingCollateral === 0n ? <p className="text-xs text-muted-foreground">Nothing supplied yet</p> : collateralUsd !== null && <p className="text-xs text-muted-foreground">{formatUsdExact(collateralUsd)}</p>}</CardContent></Card>
-        <Card><CardContent className="p-3"><p className="text-[10px] font-semibold uppercase text-muted-foreground">Debt</p><p className="text-lg font-bold text-red-500">{formatUsdExact(debtUsd)}</p>{morpho && <p className="text-xs text-muted-foreground">{formatToken(existingDebt, quote.loanDecimals)} USDC</p>}</CardContent></Card>
+        <Card><CardContent className="p-3"><p className="text-[10px] font-semibold uppercase text-muted-foreground">Debt</p><p className="text-lg font-bold text-red-500">{formatUsdExact(debtUsd)}</p><p className="text-xs text-muted-foreground">{formatToken(existingDebt, quote.loanDecimals)} USDC</p></CardContent></Card>
         <Card><CardContent className="p-3"><p className="text-[10px] font-semibold uppercase text-muted-foreground">Safe to borrow</p><p className="text-lg font-bold">{formatUsdExact(tokenAmountUsd(borrowRoom, quote.loanDecimals, 1) ?? 0)}</p></CardContent></Card>
-        <Card><CardContent className="p-3"><p className="text-[10px] font-semibold uppercase text-muted-foreground">{protocolLabel(quote.protocol)}</p><p className="text-lg font-bold">{morpho ? `${ltv.toFixed(1)}% LTV` : account && account[1] > 0n ? `HF ${(Number(account[5] / 10n ** 14n) / 10_000).toFixed(2)}` : 'No debt'}</p></CardContent></Card>
+        <Card><CardContent className="p-3"><p className="text-[10px] font-semibold uppercase text-muted-foreground">{protocolLabel(quote.protocol)}</p><p className="text-lg font-bold">{snapshot.healthFactor !== null ? `HF ${snapshot.healthFactor.toFixed(2)}` : existingCollateral > 0n ? `${ltv.toFixed(1)}% LTV` : 'No debt'}</p></CardContent></Card>
       </div>
 
       <Card>
@@ -324,7 +248,8 @@ export default function BorrowFlow({ quote, fetchedAt, venues = [], onSelect }: 
           </div>
 
           {stale && <p className="text-xs font-medium text-orange-500">Rates are older than 3 minutes. Refresh before sending a transaction.</p>}
-          {marketMissing && <p className="text-xs font-medium text-red-500">This Morpho market is not initialized.</p>}
+          {needsEnter && <p className="text-xs font-medium text-orange-500">Moonwell needs one extra confirmation to enable this collateral before the first borrow.</p>}
+          {belowMin && minBorrow > 0n && <p className="text-xs font-medium text-orange-500">Compound&apos;s minimum borrow is {formatToken(minBorrow, quote.loanDecimals)} USDC.</p>}
           {!oracleReady && <p className="text-xs font-medium text-orange-500">Waiting for the on-chain oracle before borrow is enabled.</p>}
           {pendingSupply && borrowRoom > 0n && <p className="text-xs text-muted-foreground">Borrow now uses only collateral already supplied. Supply first to raise the limit.</p>}
           {pendingSupply && borrowRoom === 0n && <p className="text-xs text-muted-foreground">Supply first. Borrowing opens once the supply confirms.</p>}
@@ -352,7 +277,7 @@ export default function BorrowFlow({ quote, fetchedAt, venues = [], onSelect }: 
           ) : (
             <div className="flex gap-2">
               <Button className="h-12 flex-1 bg-indigo-600 text-white hover:bg-indigo-700" disabled={isBusy || stale || marketMissing || !supplyAmount || supplyAmount <= 0n} onClick={() => void supply()}>{isBusy ? (isAwaitingWallet ? 'Confirm…' : 'Confirming…') : 'Supply'}</Button>
-              <Button className="h-12 flex-1 bg-blue-600 text-white hover:bg-blue-700" disabled={isBusy || stale || marketMissing || !oracleReady || !borrowAmount || borrowAmount <= 0n || borrowTooBig} onClick={() => void borrow()}>{isBusy ? (isAwaitingWallet ? 'Confirm…' : 'Confirming…') : 'Borrow'}</Button>
+              <Button className="h-12 flex-1 bg-blue-600 text-white hover:bg-blue-700" disabled={isBusy || stale || !oracleReady || !borrowAmount || borrowAmount <= 0n || borrowTooBig || belowMin} onClick={() => void borrow()}>{isBusy ? (isAwaitingWallet ? 'Confirm…' : 'Confirming…') : needsEnter ? 'Enable and borrow' : 'Borrow'}</Button>
             </div>
           )}
 

@@ -131,14 +131,13 @@ export default function BtcNetworkPanel({ btcPriceUsd }: { btcPriceUsd: number }
             Unconfirmed change: {formatBtcFromSats(Math.abs(snapshot.unconfirmedSats))} BTC {snapshot.unconfirmedSats > 0 ? 'incoming' : 'outgoing'}.
           </p>
         )}
-        <a
-          href="https://dashboard.threshold.network/tBTC/mint"
-          target="_blank"
-          rel="noreferrer"
-          className="inline-block text-xs font-semibold text-blue-600 hover:underline"
-        >
-          Mint tBTC from this balance on Threshold
-        </a>
+        <p className="text-xs text-muted-foreground">
+          To turn this Bitcoin into tBTC, use <span className="font-semibold">Get tBTC</span> above. If you already hold cbBTC, swap it there. Native BTC uses Threshold’s current mint at{' '}
+          <a href="https://app.threshold.network/" target="_blank" rel="noreferrer" className="font-semibold text-blue-600 hover:underline">
+            app.threshold.network
+          </a>
+          , not the old dashboard.
+        </p>
       </CardContent>
     </Card>
   );

@@ -4,7 +4,6 @@ const AMOUNT_PATTERN = /^\d+(\.\d+)?$/;
 
 export function approvalStep(allowance: bigint, needed: bigint): 'none' | 'reset' | 'approve' {
   if (needed <= 0n || allowance >= needed) return 'none';
-  if (allowance > 0n) return 'reset';
   return 'approve';
 }
 

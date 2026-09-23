@@ -1,4 +1,5 @@
 import { getAddress, isAddress, type Address, type Hex } from 'viem';
+import { fetchCompoundVenues, fetchMoonwellVenues, fetchSparkVenues } from '@/lib/adapters/fetchVenues';
 import {
   AAVE_POOLS,
   CHAINS,
@@ -15,7 +16,7 @@ import {
 
 const MORPHO_URL = 'https://api.morpho.org/graphql';
 const AAVE_URL = 'https://api.v3.aave.com/graphql';
-const FRESH_MS = 30_000;
+const FRESH_MS = 15_000;
 const STALE_MS = 5 * 60_000;
 
 type CacheEntry = { at: number; payload: RatesPayload };
@@ -149,6 +150,7 @@ function readMorphoVenues(payload: unknown, action: 'borrow' | 'lend'): Venue[] 
       loanDecimals: action === 'borrow' ? usdc.decimals : Number(row.collateralAsset?.decimals ?? 18),
       borrowApr: borrowApr ?? 0,
       supplyApr: supplyApr ?? 0,
+      loanSupplyApr: action === 'borrow' ? supplyApr ?? 0 : undefined,
       maxLtv,
       liquidityUsd,
       priceUsd: 0,
@@ -188,6 +190,7 @@ function readAaveVenues(payload: unknown): { venues: Venue[]; prices: number[] }
       return address !== null && address === CHAINS[chainId].usdc.address;
     });
     const usdcBorrowApr = asNumber(usdc?.borrowInfo?.apy?.value);
+    const usdcSupplyApr = asNumber(usdc?.supplyInfo?.apy?.value) ?? 0;
     const usdcLiquidity = asNumber(usdc?.borrowInfo?.availableLiquidity?.amount?.value);
     const usdcPrice = asNumber(usdc?.usdExchangeRate) ?? 1;
     const usdcLiquidityUsd = usdcLiquidity === null ? 0 : usdcLiquidity * usdcPrice;
@@ -228,6 +231,7 @@ function readAaveVenues(payload: unknown): { venues: Venue[]; prices: number[] }
           loanDecimals: CHAINS[chainId].usdc.decimals,
           borrowApr: usdcBorrowApr,
           supplyApr,
+          loanSupplyApr: usdcSupplyApr,
           maxLtv,
           liquidityUsd: usdcLiquidityUsd,
           priceUsd,
@@ -298,10 +302,11 @@ async function loadRates(): Promise<RatesPayload> {
     collateralAssetAddress_in: [...CHAINS[1].lendCollateral, ...CHAINS[8453].lendCollateral],
   };
 
-  const [morphoBorrow, morphoLend, aave] = await Promise.allSettled([
+  const [morphoBorrow, morphoLend, aave, spot] = await Promise.allSettled([
     postJson(MORPHO_URL, { query: morphoQuery, variables: { where: borrowWhere } }),
     postJson(MORPHO_URL, { query: morphoQuery, variables: { where: lendWhere } }),
     postJson(AAVE_URL, { query: aaveQuery, variables: { request: { chainIds: [1, 8453] } } }),
+    fetchBtcSpot(),
   ]);
 
   let venues: Venue[] = [];
@@ -318,7 +323,21 @@ async function loadRates(): Promise<RatesPayload> {
   } else warnings.push('Aave rates are unavailable.');
 
   let btcPriceUsd = median(prices.filter((price) => price >= 1_000 && price <= 2_000_000));
+  if (btcPriceUsd === 0 && spot.status === 'fulfilled') btcPriceUsd = spot.value;
   if (btcPriceUsd === 0) btcPriceUsd = await fetchBtcSpot();
+
+  const extras = await Promise.allSettled([
+    fetchCompoundVenues(btcPriceUsd),
+    fetchSparkVenues(btcPriceUsd),
+    fetchMoonwellVenues(btcPriceUsd),
+  ]);
+  if (extras[0].status === 'fulfilled') venues = venues.concat(extras[0].value);
+  else warnings.push('Compound V3 rates are unavailable.');
+  if (extras[1].status === 'fulfilled') venues = venues.concat(extras[1].value);
+  else warnings.push('Spark rates are unavailable.');
+  if (extras[2].status === 'fulfilled') venues = venues.concat(extras[2].value);
+  else warnings.push('Moonwell rates are unavailable.');
+
   venues = applyPrice(venues, btcPriceUsd);
   if (venues.length === 0) throw new Error('no safe venues');
 

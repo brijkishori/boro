@@ -4,8 +4,22 @@ import { useEffect, useRef, useState } from 'react';
 import { useAccount, useWaitForTransactionReceipt, useWriteContract } from 'wagmi';
 import type { Hex } from 'viem';
 import { toast } from 'sonner';
+import { AUDIT_ACTIONS_SET, buildAuditEvent, persistAuditEvent, type AuditAction, type AuditVenue } from '@/lib/audit';
+import { formatToken } from '@/lib/amount';
 import { walletUsesPhone } from './useNetworkSwitch';
 import { formatEth, formatFeeUsd, recordFee, useEthUsd, weiToUsd } from './useNetworkFee';
+
+export type TxContext = {
+  wallet: string;
+  venue: AuditVenue;
+  amount: bigint;
+  amountUsd?: number | null;
+  amountKind?: 'loan' | 'asset';
+  debt?: bigint;
+  collateral?: bigint;
+  healthFactor?: number | null;
+  closing?: boolean;
+};
 
 type WriteArgs = Parameters<ReturnType<typeof useWriteContract>['writeContractAsync']>[0];
 
@@ -17,6 +31,7 @@ const ACTION_LABELS: Record<string, string> = {
   repay: 'Repay',
   withdraw: 'Withdrawal',
   isolate: 'Collateral setting',
+  swap: 'Swap',
 };
 
 export function actionLabel(action: string) {
@@ -41,6 +56,7 @@ export function useSendTx() {
   const [chainId, setChainId] = useState<number | undefined>();
   const [confirmed, setConfirmed] = useState<{ nonce: number; action: string } | null>(null);
   const actionRef = useRef('');
+  const contextRef = useRef<TxContext | null>(null);
   const handled = useRef('');
   const { data: receipt, isLoading, isSuccess, isError } = useWaitForTransactionReceipt({ hash, chainId });
   const ethUsd = useEthUsd();
@@ -52,11 +68,37 @@ export function useSendTx() {
     const feeWei = receipt.gasUsed * receipt.effectiveGasPrice + l1Fee;
     const usd = ethUsd === null ? null : weiToUsd(feeWei, ethUsd);
     recordFee({ hash, chainId: chainId ?? 0, action: actionRef.current, feeWei: feeWei.toString(), ethUsd, at: Date.now() });
+    const ctx = contextRef.current;
+    let extra = '';
+    if (ctx && AUDIT_ACTIONS_SET.has(actionRef.current)) {
+      const event = buildAuditEvent({
+        hash,
+        wallet: ctx.wallet,
+        action: actionRef.current as AuditAction,
+        at: Date.now(),
+        chainId: chainId ?? ctx.venue.chainId,
+        venue: ctx.venue,
+        amount: ctx.amount,
+        amountUsd: ctx.amountUsd,
+        amountKind: ctx.amountKind,
+        debt: ctx.debt,
+        collateral: ctx.collateral,
+        healthFactor: ctx.healthFactor,
+        closing: ctx.closing,
+        feeWei,
+        ethUsd,
+      });
+      persistAuditEvent(event);
+      if (event.action === 'repay' && event.interestPaid && event.principalPaid) {
+        extra = ` · ${formatToken(BigInt(event.interestPaid), event.decimals)} USDC interest, ${formatToken(BigInt(event.principalPaid), event.decimals)} USDC principal`;
+      }
+    }
     toast.success(`${ACTION_LABELS[actionRef.current] ?? 'Transaction'} confirmed`, {
       id: hash,
-      description: `Network fee paid: ${formatEth(feeWei)} (${formatFeeUsd(usd)})`,
+      description: `Network fee paid: ${formatEth(feeWei)} (${formatFeeUsd(usd)})${extra}`,
     });
     setConfirmed({ nonce: Date.now(), action: actionRef.current });
+    window.dispatchEvent(new Event('boro:tx'));
   }, [hash, isSuccess, receipt, chainId, ethUsd]);
 
   useEffect(() => {
@@ -65,8 +107,9 @@ export function useSendTx() {
     toast.error('The transaction reverted on-chain. Nothing moved.', { id: hash });
   }, [hash, isError]);
 
-  async function send(action: string, args: WriteArgs) {
+  async function send(action: string, args: WriteArgs, context?: TxContext) {
     actionRef.current = action;
+    contextRef.current = context ?? null;
     const label = ACTION_LABELS[action] ?? 'Transaction';
     const prompt = walletUsesPhone(connector?.id)
       ? `Open ${connector?.id === 'coinbaseWalletSDK' ? 'Coinbase Wallet' : 'your wallet app'} on your phone to confirm the ${label.toLowerCase()}.`

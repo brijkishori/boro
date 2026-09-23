@@ -1,7 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useAccount, useConnect } from 'wagmi';
+import type { Address } from 'viem';
 import sdk from '@farcaster/frame-sdk';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -11,27 +13,45 @@ import LendFlow from '@/components/LendFlow';
 import RepayFlow from '@/components/RepayFlow';
 import FeeHistory from '@/components/FeeHistory';
 import PortfolioCard from '@/components/PortfolioCard';
+import Opportunities from '@/components/Opportunities';
+import { useAllPositions } from '@/components/useAllPositions';
 import MarketGuidance from '@/components/MarketGuidance';
 import QuoteBoard from '@/components/QuoteBoard';
 import BtcNetworkPanel from '@/components/BtcNetworkPanel';
 import CbBtcConvert from '@/components/CbBtcConvert';
+import TbtcConvert from '@/components/TbtcConvert';
 import TipJar from '@/components/TipJar';
 import { useRates } from '@/components/useRates';
 import { formatApr, formatUsd } from '@/lib/amount';
-import { isChainId, matchesAssetFilter, rankVenues, rateAssets, suggestionFor, type AssetFilter, type ChainId, type Venue, type VenueAction } from '@/lib/protocol';
+import { NetworkPicker, useNetworkFilter } from '@/components/NetworkFilter';
+import { matchesAssetFilter, rankVenues, rateAssets, suggestionFor, type AssetFilter, type Venue, type VenueAction } from '@/lib/protocol';
 
 type Mode = 'borrow' | 'lend' | 'repay';
 
-export default function Dashboard() {
-  const { isConnected, chain } = useAccount();
+export default function HomePage() {
+  return (
+    <Suspense fallback={<p className="text-sm text-muted-foreground">Loading markets…</p>}>
+      <Dashboard />
+    </Suspense>
+  );
+}
+
+function Dashboard() {
+  const { isConnected, address } = useAccount();
   const { connectAsync, connectors } = useConnect();
   const { payload, error, loading, refresh } = useRates();
-  const [mode, setMode] = useState<Mode>('borrow');
+  const search = useSearchParams();
+  const tabParam = search.get('tab');
+  const marketParam = search.get('market');
+  const urlMode: Mode | null = tabParam === 'borrow' || tabParam === 'lend' || tabParam === 'repay' ? tabParam : null;
+  const [modeOverride, setModeOverride] = useState<Mode | null>(null);
   const [filter, setFilter] = useState<AssetFilter>('all');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [pinned, setPinned] = useState(false);
-  const [network, setNetwork] = useState<ChainId | 'all' | 'wallet'>('wallet');
+  const [selectedOverride, setSelectedOverride] = useState<string | null>(null);
+  const [pinned, setPinned] = useState(Boolean(marketParam));
+  const { network, setNetwork } = useNetworkFilter();
   const started = useRef(false);
+  const mode = modeOverride ?? urlMode ?? 'borrow';
+  const selectedId = selectedOverride ?? marketParam;
 
   useEffect(() => {
     if (started.current) return;
@@ -54,15 +74,12 @@ export default function Dashboard() {
   }, [connectors, connectAsync, isConnected]);
 
   const action: VenueAction = mode === 'lend' ? 'lend' : 'borrow';
-  const connectedChainId = chain?.id ?? 0;
-  const walletChainId = isConnected && isChainId(connectedChainId) ? connectedChainId : null;
-  const networkView: ChainId | 'all' = network === 'wallet' ? (walletChainId ?? 'all') : network;
   const allForAction = useMemo(() => {
     return rankVenues(
-      (payload?.venues ?? []).filter((venue) => venue.action === action && (networkView === 'all' || venue.chainId === networkView)),
+      (payload?.venues ?? []).filter((venue) => venue.action === action && (network === 'all' || venue.chainId === network)),
       action,
     );
-  }, [payload, action, networkView]);
+  }, [payload, action, network]);
   const ranked = useMemo(() => allForAction.filter((venue) => matchesAssetFilter(venue, filter)), [allForAction, filter]);
   const ratings = useMemo(() => rateAssets(allForAction, action), [allForAction, action]);
   const suggestion = useMemo(() => suggestionFor(ranked, action), [ranked, action]);
@@ -71,19 +88,22 @@ export default function Dashboard() {
   const pinnedVenue = pinned ? ranked.find((venue) => venue.id === selectedId) ?? null : null;
   const selected = pinnedVenue ?? best;
   const btcPrice = payload?.btcPriceUsd ?? 0;
-  const networkOptions: { id: ChainId | 'all'; label: string }[] = [
-    { id: 8453, label: 'Base' },
-    { id: 1, label: 'Ethereum' },
-    { id: 'all', label: 'All networks' },
-  ];
+  const networkVenues = useMemo(
+    () => (payload?.venues ?? []).filter((venue) => network === 'all' || venue.chainId === network),
+    [payload, network],
+  );
+
+  function setMode(next: Mode) {
+    setModeOverride(next);
+  }
 
   function chooseVenue(id: string) {
     setPinned(true);
-    setSelectedId(id);
+    setSelectedOverride(id);
   }
 
-  function openPosition(venue: Venue, next: 'repay' | 'lend') {
-    setNetwork(venue.chainId === walletChainId ? 'wallet' : venue.chainId);
+  function openPosition(venue: Venue, next: Mode) {
+    setNetwork(venue.chainId);
     setFilter('all');
     setMode(next);
     chooseVenue(venue.id);
@@ -91,7 +111,9 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-4">
-      <PortfolioCard venues={payload?.venues ?? []} btcPrice={btcPrice} onOpen={openPosition} />
+      <NetworkPicker onChange={() => setPinned(false)} />
+      <PortfolioCard venues={networkVenues} btcPrice={btcPrice} onOpen={openPosition} />
+      <HomeOpportunities venues={networkVenues} address={address} onOpen={openPosition} />
       <div className="grid grid-cols-2 gap-3">
         <Card>
           <CardContent className="p-3">
@@ -118,29 +140,6 @@ export default function Dashboard() {
       {payload?.warnings.map((warning) => (
         <p key={warning} className="text-xs text-orange-500">{warning}</p>
       ))}
-
-      <div className="space-y-1.5">
-        <p className="text-[10px] font-semibold uppercase text-muted-foreground">Pools on</p>
-        <div className="grid grid-cols-3 gap-1 rounded-lg bg-muted p-1">
-          {networkOptions.map((option) => (
-            <button
-              key={String(option.id)}
-              type="button"
-              aria-pressed={networkView === option.id}
-              className={`rounded-md px-2 py-1.5 text-xs font-semibold transition ${networkView === option.id ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-              onClick={() => {
-                setPinned(false);
-                setNetwork(option.id === walletChainId ? 'wallet' : option.id);
-              }}
-            >
-              {option.label}{option.id === walletChainId ? ' · wallet' : ''}
-            </button>
-          ))}
-        </div>
-        {walletChainId && networkView !== 'all' && networkView !== walletChainId && (
-          <p className="text-[11px] text-muted-foreground">Your wallet is on {walletChainId === 1 ? 'Ethereum' : 'Base'}. These pools need a network switch before you can sign.</p>
-        )}
-      </div>
 
       <MarketGuidance
         action={action}
@@ -180,6 +179,8 @@ export default function Dashboard() {
 
       <FeeHistory />
 
+      <TbtcConvert btcPriceUsd={btcPrice} />
+
       <details className="rounded-xl border bg-card px-4 py-3">
         <summary className="cursor-pointer text-sm font-semibold">Bitcoin balance and cbBTC conversion</summary>
         <div className="mt-3 space-y-3">
@@ -216,5 +217,16 @@ export default function Dashboard() {
         </p>
       </footer>
     </div>
+  );
+}
+
+function HomeOpportunities({ venues, address, onOpen }: { venues: Venue[]; address?: Address; onOpen: (venue: Venue, mode: Mode) => void }) {
+  const { positions } = useAllPositions(venues, address);
+  return (
+    <Opportunities
+      positions={positions.filter((item) => item.venue.action === 'borrow')}
+      venues={venues}
+      onRefinance={(hint) => onOpen(hint.to, 'borrow')}
+    />
   );
 }

@@ -17,6 +17,7 @@ export default function UsdAmountField({
   balanceLabel = 'Wallet',
   percents = [25, 50, 75, 100],
   epoch = 0,
+  defaultUnit = 'usd',
   pinned,
   invalid = false,
   disabled = false,
@@ -33,6 +34,7 @@ export default function UsdAmountField({
   balanceLabel?: string;
   percents?: number[];
   epoch?: number;
+  defaultUnit?: Unit;
   pinned?: bigint;
   invalid?: boolean;
   disabled?: boolean;
@@ -42,14 +44,25 @@ export default function UsdAmountField({
   percentLabel?: (percent: number) => string;
 }) {
   const price = tokenPriceUsd(symbol, priceUsd);
-  const [unit, setUnit] = useState<Unit>('token');
+  const [unit, setUnit] = useState<Unit>(defaultUnit);
   const [text, setText] = useState('');
   const exact = useRef<bigint | null>(null);
+  const pickedUnit = useRef(false);
 
   useEffect(() => {
     setText('');
     exact.current = null;
   }, [epoch]);
+
+  useEffect(() => {
+    if (pickedUnit.current || defaultUnit !== 'usd' || unit === 'usd' || price <= 0) return;
+    setUnit('usd');
+  }, [defaultUnit, price, unit]);
+
+  useEffect(() => {
+    if (unit !== 'usd' || exact.current !== null || text === '' || text === '.' || price <= 0) return;
+    onAmount(usdToToken(text, decimals, price));
+  }, [decimals, onAmount, price, text, unit]);
 
   useEffect(() => {
     if (pinned === undefined) return;
@@ -91,6 +104,7 @@ export default function UsdAmountField({
   function chooseUnit(next: Unit) {
     if (next === unit) return;
     if (next === 'usd' && price <= 0) return;
+    pickedUnit.current = true;
     const current = resolvedAmount();
     setUnit(next);
     if (current === null) {

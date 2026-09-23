@@ -4,7 +4,18 @@ import { Providers } from './providers';
 import { Toaster } from "@/components/ui/sonner"; 
 import { GoogleAnalytics } from '@next/third-parties/google'; 
 import Navbar from '@/components/Navbar';
-import type { Metadata } from 'next'; 
+import type { Metadata, Viewport } from 'next';
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+  viewportFit: 'cover',
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#ffffff' },
+    { media: '(prefers-color-scheme: dark)', color: '#121214' },
+  ],
+}; 
 
 export async function generateMetadata(): Promise<Metadata> {
   const appUrl = 'https://boro-ruddy.vercel.app';
@@ -38,15 +49,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning>
       {/* Added overflow-x-hidden to strictly kill horizontal scrolling */}
-      <body className="min-h-screen bg-background text-foreground font-sans antialiased overflow-x-hidden">
+      <body className="min-h-dvh overflow-x-hidden bg-background font-sans text-foreground antialiased">
         <Providers>
           <Navbar />
-          
-          {/* Tighter mobile padding and max-width */}
-          <main className="w-full max-w-3xl mx-auto py-4 px-3 overflow-x-hidden">
+          <main className="mx-auto w-full max-w-3xl overflow-x-hidden px-3 py-4 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
             {children}
           </main>
-          <Toaster position="bottom-right" theme="system" /> 
+          <Toaster position="bottom-center" theme="system" /> 
         </Providers>
 
         <GoogleAnalytics gaId="G-5N0BHRH5E1" />

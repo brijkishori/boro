@@ -13,7 +13,7 @@ function readPayload(body: unknown): RatesPayload | null {
     } catch {
       return false;
     }
-  });
+  }).sort((left, right) => left.id.localeCompare(right.id));
   return {
     fetchedAt: row.fetchedAt,
     btcPriceUsd: typeof row.btcPriceUsd === 'number' ? row.btcPriceUsd : 0,
@@ -49,7 +49,7 @@ export function useRates() {
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 60_000);
+    const timer = window.setInterval(() => void refresh(), 15_000);
     const onVisible = () => {
       if (document.visibilityState === 'visible') void refresh();
     };

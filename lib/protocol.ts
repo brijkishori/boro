@@ -12,7 +12,7 @@ export const MAX_BTC_PRICE_USD = 2_000_000;
 export const ZERO_ADDRESS = getAddress('0x0000000000000000000000000000000000000000');
 
 export type ChainId = 1 | 8453;
-export type ProtocolId = 'morpho' | 'aave';
+export type ProtocolId = 'morpho' | 'aave' | 'compound' | 'spark' | 'moonwell';
 export type VenueAction = 'borrow' | 'lend';
 export type AssetKind = 'direct' | 'wrapped' | 'custodial';
 export type AssetFilter = 'all' | 'direct' | 'tBTC' | 'WBTC' | 'cbBTC';
@@ -33,6 +33,23 @@ type ChainTokens = {
 export const AAVE_POOLS: Record<ChainId, Address> = {
   1: getAddress('0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'),
   8453: getAddress('0xA238Dd80C259a72e81d7e4664a9801593F98d1c5'),
+};
+
+export const SPARK_POOL = getAddress('0xC13e21B648A5Ee794902342038FF3aDAB66BE987');
+export const SPARK_DATA_PROVIDER = getAddress('0xFc21d6d146E6086B8359705C8b28512a983db0cb');
+
+export const COMETS: Partial<Record<ChainId, Address>> = {
+  1: getAddress('0xc3d688B66703497DAA19211EEdff47f25384cdc3'),
+  8453: getAddress('0xb125E6687d4313864e53df431d5425969c15Eb2F'),
+};
+
+export const MOONWELL = {
+  chainId: 8453 as ChainId,
+  comptroller: getAddress('0xfBb21d0380beE3312B33c4353c8936a0F13EF26C'),
+  mUsdc: getAddress('0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22'),
+  markets: {
+    cbBTC: getAddress('0xF877ACaFA28c19b96727966690b2f44d35aD5976'),
+  } as Record<string, Address>,
 };
 
 const WETH: Record<ChainId, Address> = {
@@ -78,6 +95,17 @@ export type AaveMarket = {
   variableDebtToken: Address;
 };
 
+export type CompoundMarket = {
+  comet: Address;
+  minBorrow: string;
+};
+
+export type MoonwellMarket = {
+  comptroller: Address;
+  mCollateral: Address;
+  mLoan: Address;
+};
+
 export type RatesPayload = {
   fetchedAt: number;
   btcPriceUsd: number;
@@ -99,11 +127,17 @@ export type Venue = {
   loanDecimals: number;
   borrowApr: number;
   supplyApr: number;
+  /** USDC supply APY on the same market, when the venue is a BTC/USDC borrow pool. */
+  loanSupplyApr?: number;
   maxLtv: number;
   liquidityUsd: number;
   priceUsd: number;
+  utilization?: number;
+  rewardApr?: number;
   morpho?: MorphoMarket;
   aave?: AaveMarket;
+  compound?: CompoundMarket;
+  moonwell?: MoonwellMarket;
 };
 
 export function venueOnChain(venues: Venue[], quote: Venue, chainId: ChainId): Venue | null {
@@ -133,7 +167,19 @@ export function chainLabel(chainId: ChainId): string {
 }
 
 export function protocolLabel(protocol: ProtocolId): string {
-  return protocol === 'morpho' ? 'Morpho Blue' : 'Aave V3';
+  if (protocol === 'morpho') return 'Morpho Blue';
+  if (protocol === 'aave') return 'Aave V3';
+  if (protocol === 'compound') return 'Compound V3';
+  if (protocol === 'spark') return 'Spark';
+  return 'Moonwell';
+}
+
+export function protocolAppUrl(venue: Venue): string {
+  if (venue.protocol === 'morpho') return `https://app.morpho.org/${venue.chainId === 8453 ? 'base' : 'ethereum'}/borrow`;
+  if (venue.protocol === 'aave') return 'https://app.aave.com';
+  if (venue.protocol === 'spark') return 'https://app.spark.fi';
+  if (venue.protocol === 'compound') return 'https://app.compound.finance';
+  return 'https://moonwell.fi';
 }
 
 export function assetRouteLabel(kind: AssetKind): string {
@@ -191,11 +237,39 @@ export function venueConfidence(venue: Venue): VenueConfidence {
       detail: `Aave V3 is a long-running shared pool. Aave governance sets the LTV and liquidation rules, and USDC liquidity is shared across the pool. ${wrapper}`,
     };
   }
+  if (venue.protocol === 'compound') {
+    return {
+      level: 'high',
+      label: 'Compound V3',
+      detail: `Compound V3 is a conservative single-borrow market. Only USDC is borrowed, and each collateral asset has its own cap. ${wrapper}`,
+    };
+  }
+  if (venue.protocol === 'spark' && deep) {
+    return {
+      level: 'high',
+      label: 'Spark core pool',
+      detail: `Spark is Sky/Maker's Aave V3 fork on Ethereum. Frozen or zero-LTV reserves are hidden. ${wrapper}`,
+    };
+  }
   if (venue.protocol === 'morpho') {
     return {
       level: 'standard',
       label: 'Morpho market',
       detail: `Isolated Morpho Blue market with enough liquidity for a moderate borrow. ${wrapper}`,
+    };
+  }
+  if (venue.protocol === 'moonwell') {
+    return {
+      level: 'standard',
+      label: 'Moonwell on Base',
+      detail: `Moonwell is a Compound-style pool on Base. Used by Coinbase for some Base listings, but smaller than Aave or Compound. ${wrapper}`,
+    };
+  }
+  if (venue.protocol === 'spark') {
+    return {
+      level: 'standard',
+      label: 'Spark pool',
+      detail: `Spark is Sky/Maker's Aave V3 fork. Governance sets the collateral limits. ${wrapper}`,
     };
   }
   return {
@@ -212,7 +286,7 @@ function confidenceRank(venue: Venue): number {
   return level + coinbase;
 }
 
-function sameAddress(left: string, right: string): boolean {
+export function sameAddress(left: string, right: string): boolean {
   return isAddress(left) && isAddress(right) && getAddress(left) === getAddress(right);
 }
 
@@ -243,12 +317,34 @@ function saneApr(apr: number): boolean {
   return Number.isFinite(apr) && apr >= 0 && apr < MAX_APR;
 }
 
+function exclusiveProtocolFields(venue: Venue, kind: ProtocolId): boolean {
+  const morpho = Boolean(venue.morpho);
+  const aave = Boolean(venue.aave);
+  const compound = Boolean(venue.compound);
+  const moonwell = Boolean(venue.moonwell);
+  if (kind === 'morpho') return morpho && !aave && !compound && !moonwell;
+  if (kind === 'aave' || kind === 'spark') return aave && !morpho && !compound && !moonwell;
+  if (kind === 'compound') return compound && !morpho && !aave && !moonwell;
+  return moonwell && !morpho && !aave && !compound;
+}
+
+function aaveLikeSafe(venue: Venue, asset: TokenInfo, pool: Address): boolean {
+  const aave = venue.aave;
+  if (!aave || !exclusiveProtocolFields(venue, venue.protocol)) return false;
+  if (!sameAddress(aave.pool, pool)) return false;
+  if (!isAddress(aave.aToken) || !isAddress(aave.variableDebtToken)) return false;
+  if (sameAddress(aave.aToken, ZERO_ADDRESS) || sameAddress(aave.variableDebtToken, ZERO_ADDRESS)) return false;
+  if (venue.action === 'lend' && (venue.maxLtv < 0 || venue.maxLtv > 0.9)) return false;
+  return Boolean(asset);
+}
+
 export function isVenueSafe(venue: Venue): boolean {
   if (!isChainId(venue.chainId)) return false;
-  if (venue.protocol !== 'morpho' && venue.protocol !== 'aave') return false;
+  if (!['morpho', 'aave', 'compound', 'spark', 'moonwell'].includes(venue.protocol)) return false;
   if (venue.action !== 'borrow' && venue.action !== 'lend') return false;
   if (!sanePrice(venue.priceUsd) || venue.liquidityUsd < MIN_LIQUIDITY_USD) return false;
   if (!saneApr(venue.borrowApr) || !saneApr(venue.supplyApr)) return false;
+  if (venue.loanSupplyApr !== undefined && !saneApr(venue.loanSupplyApr)) return false;
 
   const asset = findBtcToken(venue.chainId, venue.assetAddress);
   if (!asset || asset.symbol !== venue.assetSymbol || asset.decimals !== venue.assetDecimals || asset.kind !== venue.assetKind) {
@@ -265,7 +361,7 @@ export function isVenueSafe(venue: Venue): boolean {
 
   if (venue.protocol === 'morpho') {
     const market = venue.morpho;
-    if (!market || venue.aave) return false;
+    if (!market || !exclusiveProtocolFields(venue, 'morpho')) return false;
     if (!/^\d+$/.test(market.lltv)) return false;
     let lltv: bigint;
     try {
@@ -287,18 +383,30 @@ export function isVenueSafe(venue: Venue): boolean {
     return collateralAllowed && sameAddress(market.loanToken, asset.address);
   }
 
-  const aave = venue.aave;
-  if (!aave || venue.morpho) return false;
-  if (!sameAddress(aave.pool, AAVE_POOLS[venue.chainId])) return false;
-  if (!isAddress(aave.aToken) || !isAddress(aave.variableDebtToken)) return false;
-  if (sameAddress(aave.aToken, ZERO_ADDRESS) || sameAddress(aave.variableDebtToken, ZERO_ADDRESS)) return false;
-  if (venue.action === 'lend' && (venue.maxLtv < 0 || venue.maxLtv > 0.9)) return false;
-  return true;
+  if (venue.protocol === 'aave') return aaveLikeSafe(venue, asset, AAVE_POOLS[venue.chainId]);
+  if (venue.protocol === 'spark') return venue.chainId === 1 && aaveLikeSafe(venue, asset, SPARK_POOL);
+
+  if (venue.protocol === 'compound') {
+    const comet = COMETS[venue.chainId];
+    if (!comet || !venue.compound || !exclusiveProtocolFields(venue, 'compound')) return false;
+    if (venue.action !== 'borrow') return false;
+    if (!sameAddress(venue.compound.comet, comet)) return false;
+    return /^\d+$/.test(venue.compound.minBorrow);
+  }
+
+  if (venue.protocol !== 'moonwell' || venue.chainId !== MOONWELL.chainId) return false;
+  const moonwell = venue.moonwell;
+  if (!moonwell || !exclusiveProtocolFields(venue, 'moonwell')) return false;
+  if (!sameAddress(moonwell.comptroller, MOONWELL.comptroller) || !sameAddress(moonwell.mLoan, MOONWELL.mUsdc)) return false;
+  const expected = MOONWELL.markets[venue.assetSymbol];
+  return Boolean(expected && sameAddress(moonwell.mCollateral, expected));
 }
 
-export function venueSpender(venue: Venue): Address | null {
+export function venueSpender(venue: Venue, kind: 'asset' | 'loan' = 'asset'): Address | null {
   if (!isVenueSafe(venue)) return null;
   if (venue.protocol === 'morpho') return MORPHO_BLUE;
+  if (venue.protocol === 'compound') return venue.compound?.comet ?? null;
+  if (venue.protocol === 'moonwell') return kind === 'loan' ? (venue.moonwell?.mLoan ?? null) : (venue.moonwell?.mCollateral ?? null);
   return venue.aave?.pool ?? null;
 }
 
