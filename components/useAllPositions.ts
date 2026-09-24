@@ -14,7 +14,14 @@ export type OpenPosition = {
 const lastByAddress = new Map<string, OpenPosition[]>();
 
 function venueKey(venue: Venue) {
-  return `${venue.protocol}:${venue.chainId}:${venue.assetAddress.toLowerCase()}:${venue.action}`;
+  const market = (
+    venue.morpho?.marketId
+    ?? venue.aave?.pool
+    ?? venue.compound?.comet
+    ?? venue.moonwell?.mCollateral
+    ?? ''
+  ).toLowerCase();
+  return `${venue.protocol}:${venue.chainId}:${venue.assetAddress.toLowerCase()}:${market}`;
 }
 
 function isOpenPosition(venue: Venue, snapshot: PositionSnapshot) {
@@ -44,7 +51,10 @@ export function useAllPositions(venues: Venue[], address: Address | undefined) {
     const map = new Map<string, Venue>();
     for (const venue of venues) {
       const key = venueKey(venue);
-      if (!map.has(key)) map.set(key, venue);
+      const existing = map.get(key);
+      if (!existing || (existing.action === 'lend' && venue.action === 'borrow')) {
+        map.set(key, venue);
+      }
     }
     return [...map.values()].sort((left, right) => venueKey(left).localeCompare(venueKey(right)));
   }, [venues]);

@@ -29,18 +29,26 @@ export default function PortfolioCard({ venues, btcPrice, onOpen }: { venues: Ve
     if (row.kind !== 'btc' || row.amount <= 0n || !matchesNetwork(row.chainId, network)) return [];
     return [{ key: `w:${row.chainId}:${row.symbol}`, label: `Wallet · ${row.network}`, symbol: row.symbol, amount: row.amount, decimals: row.decimals, usd: row.usd ?? Number(formatUnits(row.amount, row.decimals)) * btcPrice }];
   });
-  const suppliedRows: SuppliedRow[] = positions.map(({ venue, snapshot }) => ({
-    key: venue.id,
-    label: `${protocolLabel(venue.protocol)} · ${chainLabel(venue.chainId)}`,
-    symbol: venue.assetSymbol,
-    amount: snapshot.collateral,
-    decimals: venue.assetDecimals,
-    usd: Number(formatUnits(snapshot.collateral, venue.assetDecimals)) * (venue.priceUsd || btcPrice),
-    venue,
-    mode: (venue.action === 'lend' ? 'lend' : 'repay') as 'lend' | 'repay',
-    debtUsd: Number(formatUnits(snapshot.debt, venue.loanDecimals)),
-  }));
-  const rows = [...walletRows, ...suppliedRows.filter((row) => row.amount > 0n)];
+  const suppliedRows: SuppliedRow[] = [];
+  const seen = new Set<string>();
+  for (const { venue, snapshot } of positions) {
+    if (snapshot.collateral <= 0n) continue;
+    const key = `${venue.protocol}:${venue.chainId}:${venue.assetAddress}:${venue.aave?.pool ?? venue.morpho?.marketId ?? venue.compound?.comet ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    suppliedRows.push({
+      key,
+      label: `${protocolLabel(venue.protocol)} · ${chainLabel(venue.chainId)} · ${venue.assetSymbol}`,
+      symbol: venue.assetSymbol,
+      amount: snapshot.collateral,
+      decimals: venue.assetDecimals,
+      usd: Number(formatUnits(snapshot.collateral, venue.assetDecimals)) * (venue.priceUsd || btcPrice),
+      venue,
+      mode: snapshot.debt > 0n || venue.action === 'borrow' ? 'repay' : 'lend',
+      debtUsd: Number(formatUnits(snapshot.debt, venue.loanDecimals)),
+    });
+  }
+  const rows = [...walletRows, ...suppliedRows];
   const totalBtc = rows.reduce((sum, row) => sum + Number(formatUnits(row.amount, row.decimals)), 0);
   const totalUsd = rows.reduce((sum, row) => sum + row.usd, 0);
   const debtUsd = suppliedRows.reduce((sum, row) => sum + row.debtUsd, 0);
