@@ -10,6 +10,7 @@ import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import WalletQr from '@/components/WalletQr';
+import { readStoredNetwork } from '@/components/NetworkFilter';
 import { useNetworkSwitch } from '@/components/useNetworkSwitch';
 import { config } from '@/lib/config';
 import {
@@ -30,6 +31,11 @@ import {
 } from '@/lib/wallets';
 
 type Device = 'mobile' | 'desktop';
+
+function connectChain(): { chainId?: 1 | 8453 } {
+  const view = readStoredNetwork();
+  return view === 'all' ? {} : { chainId: view };
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -283,12 +289,12 @@ export default function CustomConnectButton() {
         const extension = connectors.find((item) => item.id === 'coinbaseExtension') ?? coinbaseMobile;
         setQrWallet(null);
         setUri('');
-        await withTimeout(connectAsync({ connector: extension, chainId: base.id }), 20_000);
+        await withTimeout(connectAsync({ connector: extension, ...connectChain() }), 20_000);
         if (qrAttempt.current === attempt) toast.success(`${choice.name} connected`);
         return;
       }
       setUri(link);
-      await connectAsync({ connector: coinbaseMobile, chainId: base.id });
+      await connectAsync({ connector: coinbaseMobile, ...connectChain() });
       if (qrAttempt.current === attempt) toast.success(`${choice.name} connected`);
     } catch (caught) {
       if (qrAttempt.current !== attempt) return;
@@ -311,7 +317,7 @@ export default function CustomConnectButton() {
     try {
       await walletConnect.disconnect().catch(() => undefined);
       if (qrAttempt.current !== attempt) return;
-      await connectAsync({ connector: walletConnect, chainId: base.id });
+      await connectAsync({ connector: walletConnect, ...connectChain() });
       if (qrAttempt.current === attempt) toast.success(`${choice.name} connected`);
     } catch (caught) {
       if (qrAttempt.current !== attempt) return;
@@ -326,7 +332,7 @@ export default function CustomConnectButton() {
     setPendingId(connector.uid);
     const provider = await withTimeout(connector.getProvider(), 2_500);
     if (!provider) throw new Error(`${choice.name} is not available in this browser.`);
-    await withTimeout(connectAsync({ connector, chainId: base.id }), 20_000);
+    await withTimeout(connectAsync({ connector, ...connectChain() }), 20_000);
     toast.success(`${choice.name} connected`);
     return true;
   }

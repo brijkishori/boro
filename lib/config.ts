@@ -1,12 +1,12 @@
 import { farcasterFrame } from '@farcaster/frame-wagmi-connector';
-import { createConfig, http, type CreateConnectorFn } from 'wagmi';
+import { createConfig, type CreateConnectorFn } from 'wagmi';
 import { coinbaseWallet, injected, walletConnect } from 'wagmi/connectors';
 import { base, mainnet } from 'wagmi/chains';
 import type { EIP1193Provider } from 'viem';
+import { chainTransport } from '@/lib/rpc';
 
 const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim()
   || '21fef48091f12692cad574a6f7753643';
-const alchemyKey = process.env.NEXT_PUBLIC_ALCHEMY_KEY;
 
 type FlaggedProvider = EIP1193Provider & {
   providers?: FlaggedProvider[];
@@ -102,16 +102,12 @@ function buildConnectors(): CreateConnectorFn[] {
 
 const connectors = buildConnectors();
 
-function rpc(fallback: string, alchemyHost: string) {
-  return http(alchemyKey ? `https://${alchemyHost}/v2/${alchemyKey}` : fallback);
-}
-
 export const config = createConfig({
   chains: [base, mainnet],
   connectors,
   transports: {
-    [base.id]: rpc('https://mainnet.base.org', 'base-mainnet.g.alchemy.com'),
-    [mainnet.id]: rpc('https://ethereum.publicnode.com', 'eth-mainnet.g.alchemy.com'),
+    [base.id]: chainTransport(8453),
+    [mainnet.id]: chainTransport(1),
   },
   multiInjectedProviderDiscovery: false,
   ssr: true,
