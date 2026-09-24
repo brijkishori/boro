@@ -134,6 +134,29 @@ export function walletDappUrl(choiceId: string, pageUrl = typeof window === 'und
   return '';
 }
 
+const WC_NATIVE: Record<string, string> = {
+  coinbase: 'cbwallet://wc?uri=',
+  metaMask: 'metamask://wc?uri=',
+  rainbow: 'rainbow://wc?uri=',
+  trustWallet: 'trust://wc?uri=',
+  zerion: 'zerion://wc?uri=',
+  okxWallet: 'okx://wallet/wc?uri=',
+  phantom: 'phantom://wc?uri=',
+  rabby: 'rabby://wc?uri=',
+};
+
+/** Coinbase Wallet iOS opens this and shows the WalletLink approval. `/wc?uri=` only launches the app. */
+export function coinbaseWalletOpenUrl(
+  walletLinkUrl: string,
+  pageUrl = typeof window === 'undefined' ? '' : window.location.href,
+) {
+  if (!isCoinbaseLink(walletLinkUrl) || !pageUrl) return '';
+  const url = new URL('https://go.cb-w.com/walletlink');
+  url.searchParams.set('redirect_url', pageUrl);
+  url.searchParams.set('wl_url', walletLinkUrl);
+  return url.href;
+}
+
 export function walletConnectLink(choiceId: string, uri: string) {
   if (!isWalletConnectUri(uri)) return '';
   const encoded = encodeURIComponent(uri);
@@ -142,9 +165,21 @@ export function walletConnectLink(choiceId: string, uri: string) {
   if (choiceId === 'trustWallet') return `https://link.trustwallet.com/wc?uri=${encoded}`;
   if (choiceId === 'coinbase') return `https://go.cb-w.com/wc?uri=${encoded}`;
   if (choiceId === 'zerion') return `https://wallet.zerion.io/wc?uri=${encoded}`;
-  if (choiceId === 'okxWallet') return `https://www.okx.com/download?deeplink=${encodeURIComponent(`okx://wallet/dapp/url?dappUrl=${uri}`)}`;
-  if (choiceId === 'phantom') return `https://phantom.app/ul/v1/connect?app_url=${encodeURIComponent(typeof window === 'undefined' ? '' : window.location.origin)}`;
+  if (choiceId === 'okxWallet') return `https://www.okx.com/download?deeplink=${encodeURIComponent(`okx://wallet/wc?uri=${encoded}`)}`;
+  if (choiceId === 'phantom') return `https://phantom.app/ul/wc?uri=${encoded}`;
   return uri;
+}
+
+/** iPhone handoff that carries the pairing request into the wallet app. */
+export function phoneOpenHref(
+  choiceId: string,
+  uri: string,
+  pageUrl = typeof window === 'undefined' ? '' : window.location.href,
+) {
+  if (isCoinbaseLink(uri)) return coinbaseWalletOpenUrl(uri, pageUrl);
+  if (!isWalletConnectUri(uri)) return '';
+  const prefix = WC_NATIVE[choiceId];
+  return prefix ? `${prefix}${encodeURIComponent(uri)}` : uri;
 }
 
 export function openWalletUrl(url: string) {

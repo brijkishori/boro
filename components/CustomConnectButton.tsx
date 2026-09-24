@@ -22,6 +22,7 @@ import {
   isScannableUri,
   isWalletConnectUri,
   openWalletUrl,
+  phoneOpenHref,
   walletConnectLink,
   walletDappUrl,
   type WalletChoice,
@@ -94,6 +95,7 @@ export default function CustomConnectButton() {
   const [qrWallet, setQrWallet] = useState<WalletChoice | null>(null);
   const [handoff, setHandoff] = useState<WalletChoice | null>(null);
   const [uri, setUri] = useState('');
+  const [openReady, setOpenReady] = useState(false);
   const qrAttempt = useRef(0);
   const expectingUri = useRef(false);
   const coinbaseReset = useRef<Promise<void>>(Promise.resolve());
@@ -128,7 +130,7 @@ export default function CustomConnectButton() {
     }
     void Promise.resolve(storage.getItem('recentConnectorId')).then((recent: string | null) => {
       if (cancelled) return;
-      if (!recent) {
+      if (!recent || (isPhone() && recent === 'coinbaseWalletSDK')) {
         setRestoreSettled(true);
         return;
       }
@@ -156,6 +158,13 @@ export default function CustomConnectButton() {
     setUri('');
     setPendingId(null);
   }, [isConnected]);
+
+  useEffect(() => {
+    setOpenReady(false);
+    if (!isScannableUri(uri)) return;
+    const timer = window.setTimeout(() => setOpenReady(true), 450);
+    return () => window.clearTimeout(timer);
+  }, [uri]);
 
   useEffect(() => {
     if (!walletConnect) return;
@@ -256,9 +265,20 @@ export default function CustomConnectButton() {
       await coinbaseReset.current;
       if (qrAttempt.current !== attempt) return;
       await withTimeout(coinbaseMobile.getProvider(), 8_000);
-      const link = coinbaseLinkFromStorage(base.id);
+      let link = coinbaseLinkFromStorage(base.id);
+      const started = Date.now();
+      while (!link && Date.now() - started < 2_500) {
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+        if (qrAttempt.current !== attempt) return;
+        link = coinbaseLinkFromStorage(base.id);
+      }
       if (qrAttempt.current !== attempt) return;
       if (!link) {
+        if (phone) {
+          setError('Coinbase Wallet could not start a session. Close and try again.');
+          setPendingId(null);
+          return;
+        }
         const extension = connectors.find((item) => item.id === 'coinbaseExtension') ?? coinbaseMobile;
         setQrWallet(null);
         setUri('');
@@ -552,9 +572,9 @@ export default function CustomConnectButton() {
                           ? `Tap Open ${qrWallet.name}, approve the connection, then come back here.`
                           : `Preparing a link for ${qrWallet.name}…`}
                       </p>
-                      {isScannableUri(uri) && walletConnectLink(qrWallet.id, uri) ? (
+                      {openReady && phoneOpenHref(qrWallet.id, uri) ? (
                         <Button asChild className="h-11 w-full bg-blue-600 font-bold text-white hover:bg-blue-700">
-                          <a href={walletConnectLink(qrWallet.id, uri)} target="_blank" rel="noopener noreferrer">
+                          <a href={phoneOpenHref(qrWallet.id, uri)}>
                             Open {qrWallet.name}
                           </a>
                         </Button>
