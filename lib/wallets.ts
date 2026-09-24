@@ -177,9 +177,85 @@ export function phoneOpenHref(
   pageUrl = typeof window === 'undefined' ? '' : window.location.href,
 ) {
   if (isCoinbaseLink(uri)) return coinbaseWalletOpenUrl(uri, pageUrl);
-  if (!isWalletConnectUri(uri)) return '';
+  // HTTPS universal links keep the wc: pairing. Native schemes often only launch the app.
+  return walletConnectLink(choiceId, uri);
+}
+
+export function phoneFallbackHref(choiceId: string, uri: string) {
+  if (isCoinbaseLink(uri) || !isWalletConnectUri(uri)) return '';
   const prefix = WC_NATIVE[choiceId];
-  return prefix ? `${prefix}${encodeURIComponent(uri)}` : uri;
+  return prefix ? `${prefix}${encodeURIComponent(uri)}` : '';
+}
+
+function isPageStealUrl(url: string) {
+  return /go\.cb-w\.com\/dapp|[\w-]+\.app\.link/i.test(url);
+}
+
+export async function withoutLeavingPage<T>(run: () => Promise<T>): Promise<T> {
+  if (typeof window === 'undefined') return run();
+  const { location } = window;
+  const assign = location.assign.bind(location);
+  const replace = location.replace.bind(location);
+  const open = window.open.bind(window);
+  const hrefDesc =
+    Object.getOwnPropertyDescriptor(Location.prototype, 'href') ??
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(location), 'href');
+  const guarded = (url: string | URL) => {
+    if (isPageStealUrl(String(url))) return;
+    assign(url);
+  };
+  const onClick = (event: Event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const anchor = target.closest('a');
+    if (!anchor?.href || !isPageStealUrl(anchor.href)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  window.open = (url, target, features) => {
+    if (url && isPageStealUrl(String(url))) return null;
+    return open(url, target, features);
+  };
+  document.addEventListener('click', onClick, true);
+  try {
+    location.assign = guarded;
+    location.replace = guarded;
+  } catch {
+    // Some browsers lock Location methods.
+  }
+  try {
+    if (hrefDesc?.configurable && hrefDesc.get && hrefDesc.set) {
+      Object.defineProperty(location, 'href', {
+        configurable: true,
+        get: () => hrefDesc.get?.call(location),
+        set: (value: string) => {
+          if (isPageStealUrl(String(value))) return;
+          hrefDesc.set?.call(location, value);
+        },
+      });
+    }
+  } catch {
+    // href may be non-configurable.
+  }
+  try {
+    return await run();
+  } finally {
+    document.removeEventListener('click', onClick, true);
+    window.open = open;
+    try {
+      location.assign = assign;
+      location.replace = replace;
+    } catch {
+      // ignore
+    }
+    try {
+      if (hrefDesc?.configurable && hrefDesc.get && hrefDesc.set) {
+        Object.defineProperty(location, 'href', hrefDesc);
+      }
+    } catch {
+      // ignore
+    }
+  }
 }
 
 export function openWalletUrl(url: string) {

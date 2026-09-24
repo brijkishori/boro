@@ -76,7 +76,10 @@ function buildConnectors(): CreateConnectorFn[] {
     appName: 'Simple BTC Borrow',
     appLogoUrl: 'https://boro-ruddy.vercel.app/icon.png',
     headlessMode: true,
-  }), connectors);
+    // WalletLink pairing on iPhone. Without this, Coinbase SDK sets
+    // location.href to go.cb-w.com/dapp and the wallet opens with nothing to approve.
+    enableMobileWalletLink: true,
+  } as Parameters<typeof coinbaseWallet>[0]), connectors);
   attemptConnector('Rainbow', () => namedWallet('rainbow', 'Rainbow', flagged('isRainbow')), connectors);
   attemptConnector('Rabby', () => namedWallet('rabby', 'Rabby', flagged('isRabby')), connectors);
   attemptConnector('Trust Wallet', () => namedWallet('trustWallet', 'Trust Wallet', trustProvider), connectors);

@@ -22,9 +22,10 @@ import {
   isScannableUri,
   isWalletConnectUri,
   openWalletUrl,
+  phoneFallbackHref,
   phoneOpenHref,
-  walletConnectLink,
   walletDappUrl,
+  withoutLeavingPage,
   type WalletChoice,
 } from '@/lib/wallets';
 
@@ -162,7 +163,7 @@ export default function CustomConnectButton() {
   useEffect(() => {
     setOpenReady(false);
     if (!isScannableUri(uri)) return;
-    const timer = window.setTimeout(() => setOpenReady(true), 450);
+    const timer = window.setTimeout(() => setOpenReady(true), 800);
     return () => window.clearTimeout(timer);
   }, [uri]);
 
@@ -264,7 +265,8 @@ export default function CustomConnectButton() {
     try {
       await coinbaseReset.current;
       if (qrAttempt.current !== attempt) return;
-      await withTimeout(coinbaseMobile.getProvider(), 8_000);
+      const stay = phone ? withoutLeavingPage : async <T,>(run: () => Promise<T>) => run();
+      await stay(() => withTimeout(coinbaseMobile.getProvider(), 8_000));
       let link = coinbaseLinkFromStorage(base.id);
       const started = Date.now();
       while (!link && Date.now() - started < 2_500) {
@@ -287,7 +289,7 @@ export default function CustomConnectButton() {
         return;
       }
       setUri(link);
-      await connectAsync({ connector: coinbaseMobile, chainId: base.id });
+      await stay(() => connectAsync({ connector: coinbaseMobile, chainId: base.id }));
       if (qrAttempt.current === attempt) toast.success(`${choice.name} connected`);
     } catch (caught) {
       if (qrAttempt.current !== attempt) return;
@@ -358,7 +360,8 @@ export default function CustomConnectButton() {
       }
     }
     if (phone) {
-      await startQr(choice);
+      if (choice.id === 'coinbase') await startCoinbaseQr(choice);
+      else await startQr(choice);
       return;
     }
     if (choice.id === 'coinbase') await startCoinbaseQr(choice);
@@ -569,15 +572,25 @@ export default function CustomConnectButton() {
                       <p className="text-sm font-semibold">Keep this page open</p>
                       <p className="text-xs leading-relaxed text-muted-foreground">
                         {isScannableUri(uri)
-                          ? `Tap Open ${qrWallet.name}, approve the connection, then come back here.`
+                          ? `Tap Open ${qrWallet.name}. The wallet should show Connect / Approve. If it only opens the home screen, come back and tap Open again.`
                           : `Preparing a link for ${qrWallet.name}…`}
                       </p>
                       {openReady && phoneOpenHref(qrWallet.id, uri) ? (
-                        <Button asChild className="h-11 w-full bg-blue-600 font-bold text-white hover:bg-blue-700">
-                          <a href={phoneOpenHref(qrWallet.id, uri)}>
-                            Open {qrWallet.name}
-                          </a>
-                        </Button>
+                        <>
+                          <Button asChild className="h-11 w-full bg-blue-600 font-bold text-white hover:bg-blue-700">
+                            <a href={phoneOpenHref(qrWallet.id, uri)}>
+                              Open {qrWallet.name}
+                            </a>
+                          </Button>
+                          {phoneFallbackHref(qrWallet.id, uri) ? (
+                            <a
+                              href={phoneFallbackHref(qrWallet.id, uri)}
+                              className="text-xs font-semibold text-blue-600 underline-offset-2 hover:underline"
+                            >
+                              Didn’t see Approve? Try the app link
+                            </a>
+                          ) : null}
+                        </>
                       ) : (
                         <Button type="button" className="h-11 w-full bg-blue-600 font-bold text-white hover:bg-blue-700" disabled>
                           Preparing…
