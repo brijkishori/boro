@@ -21,11 +21,11 @@ import {
   isPhone,
   isScannableUri,
   isWalletConnectUri,
+  openWalletDapp,
   openWalletUrl,
   phoneFallbackHref,
   phoneOpenHref,
   walletDappUrl,
-  withoutLeavingPage,
   type WalletChoice,
 } from '@/lib/wallets';
 
@@ -265,8 +265,7 @@ export default function CustomConnectButton() {
     try {
       await coinbaseReset.current;
       if (qrAttempt.current !== attempt) return;
-      const stay = phone ? withoutLeavingPage : async <T,>(run: () => Promise<T>) => run();
-      await stay(() => withTimeout(coinbaseMobile.getProvider(), 8_000));
+      await withTimeout(coinbaseMobile.getProvider(), 8_000);
       let link = coinbaseLinkFromStorage(base.id);
       const started = Date.now();
       while (!link && Date.now() - started < 2_500) {
@@ -289,7 +288,7 @@ export default function CustomConnectButton() {
         return;
       }
       setUri(link);
-      await stay(() => connectAsync({ connector: coinbaseMobile, chainId: base.id }));
+      await connectAsync({ connector: coinbaseMobile, chainId: base.id });
       if (qrAttempt.current === attempt) toast.success(`${choice.name} connected`);
     } catch (caught) {
       if (qrAttempt.current !== attempt) return;
@@ -360,8 +359,8 @@ export default function CustomConnectButton() {
       }
     }
     if (phone) {
-      if (choice.id === 'coinbase') await startCoinbaseQr(choice);
-      else await startQr(choice);
+      if (openWalletDapp(choice.id)) return;
+      setError(`Open this site inside ${choice.name}, then tap Connect again.`);
       return;
     }
     if (choice.id === 'coinbase') await startCoinbaseQr(choice);
@@ -369,14 +368,33 @@ export default function CustomConnectButton() {
   }
 
   useEffect(() => {
-    if (autoOpened.current || !restoreSettled || isConnected || !accepted) return;
-    const inApp = inAppWalletId();
-    if (!inApp || !installed.includes(WALLET_CHOICES.find((choice) => choice.id === inApp)?.desktopId ?? '')) return;
-    const choice = WALLET_CHOICES.find((item) => item.id === inApp);
-    if (!choice) return;
-    autoOpened.current = true;
-    void choose(choice);
-  }, [accepted, installed, isConnected, restoreSettled]);
+    if (autoOpened.current || isConnected) return;
+    const tryInApp = () => {
+      if (autoOpened.current || isConnected) return true;
+      const inApp = inAppWalletId();
+      if (!inApp) return false;
+      const choice = WALLET_CHOICES.find((item) => item.id === inApp);
+      if (!choice) return false;
+      autoOpened.current = true;
+      window.localStorage.setItem('simplebtc_terms_accepted', 'true');
+      setAccepted(true);
+      void connectInjected(choice).catch((caught) => {
+        autoOpened.current = false;
+        setError(failureMessage(caught, choice.name));
+        setPendingId(null);
+      });
+      return true;
+    };
+    if (tryInApp()) return;
+    const timer = window.setInterval(() => {
+      if (tryInApp()) window.clearInterval(timer);
+    }, 300);
+    const stop = window.setTimeout(() => window.clearInterval(timer), 4_000);
+    return () => {
+      window.clearInterval(timer);
+      window.clearTimeout(stop);
+    };
+  }, [isConnected]);
 
   function switchNetwork() {
     if (network.pendingChainId) {
@@ -536,7 +554,7 @@ export default function CustomConnectButton() {
                 <p className="text-xs leading-relaxed text-muted-foreground">
                   {inAppWalletId()
                     ? 'This page is already inside a wallet. Tap that wallet to finish connecting.'
-                    : 'Tap a wallet. This page stays open. On the next screen, tap Open, approve, then return here.'}
+                    : 'Tap a wallet. This page opens inside the app, then the wallet asks you to approve.'}
                 </p>
               )}
               {error && <p className="rounded-md border border-red-500/40 bg-red-500/10 p-2 text-xs font-medium text-red-600 dark:text-red-400">{error}</p>}

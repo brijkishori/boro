@@ -101,6 +101,14 @@ export function isPhone() {
 
 export function inAppWalletId(): string | null {
   if (typeof window === 'undefined') return null;
+  const ethereum = (window as Window & { ethereum?: Record<string, unknown> }).ethereum;
+  if (ethereum?.isCoinbaseWallet) return 'coinbase';
+  if (ethereum?.isRainbow) return 'rainbow';
+  if (ethereum?.isTrust || ethereum?.isTrustWallet) return 'trustWallet';
+  if (ethereum?.isPhantom) return 'phantom';
+  if (ethereum?.isOkxWallet) return 'okxWallet';
+  if (ethereum?.isZerion) return 'zerion';
+  if (ethereum?.isMetaMask && !ethereum?.isBraveWallet) return 'metaMask';
   const ua = navigator.userAgent || '';
   if (/CoinbaseWallet|CBWallet/i.test(ua)) return 'coinbase';
   if (/MetaMaskMobile/i.test(ua)) return 'metaMask';
@@ -125,10 +133,10 @@ export function walletDappUrl(choiceId: string, pageUrl = typeof window === 'und
     }
   }
   if (choiceId === 'trustWallet') return `https://link.trustwallet.com/open_url?coin_id=60&url=${encoded}`;
-  if (choiceId === 'rainbow') return `https://rnbwapp.com/`;
+  if (choiceId === 'rainbow') return `https://rnbwapp.com/dapp?url=${encoded}`;
   if (choiceId === 'phantom') return `https://phantom.app/ul/browse/${encoded}`;
   if (choiceId === 'okxWallet') return `https://www.okx.com/download?deeplink=${encodeURIComponent(`okx://wallet/dapp/url?dappUrl=${pageUrl}`)}`;
-  if (choiceId === 'zerion') return `https://wallet.zerion.io/`;
+  if (choiceId === 'zerion') return `https://link.zerion.io/browse?url=${encoded}`;
   if (choiceId === 'rabby') return `https://rabby.io/`;
   if (choiceId === 'braveWallet') return '';
   return '';
@@ -262,4 +270,12 @@ export function openWalletUrl(url: string) {
   if (!url || typeof window === 'undefined') return false;
   const opened = window.open(url, '_blank', 'noopener,noreferrer');
   return Boolean(opened);
+}
+
+/** iPhone must navigate this tab. window.open is blocked and drops the dapp URL. */
+export function openWalletDapp(choiceId: string) {
+  const dapp = walletDappUrl(choiceId);
+  if (!dapp || typeof window === 'undefined') return false;
+  window.location.assign(dapp);
+  return true;
 }
