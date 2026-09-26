@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
-import { isBitcoinMainnetAddress, isTbtcRecoveryAddress } from '@/lib/btc';
+import { isBitcoinMainnetAddress, isTbtcRecoveryAddress, normalizeBitcoinAddress } from '@/lib/btc';
 import {
   BTC_ADDRESS_EVENT,
   connectInjectedBitcoinAddress,
@@ -18,12 +18,14 @@ type Snapshot = {
   address: string;
   confirmedSats: number;
   unconfirmedSats: number;
+  txCount?: number;
 };
 
 type BitcoinAccountValue = {
   address: string;
   confirmedSats: number;
   unconfirmedSats: number;
+  txCount: number;
   sats: number;
   loading: boolean;
   connecting: boolean;
@@ -53,6 +55,7 @@ export function BitcoinAccountProvider({ children }: { children: ReactNode }) {
   const [address, setAddress] = useState('');
   const [confirmedSats, setConfirmedSats] = useState(0);
   const [unconfirmedSats, setUnconfirmedSats] = useState(0);
+  const [txCount, setTxCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [pairingUri, setPairingUri] = useState('');
@@ -65,11 +68,12 @@ export function BitcoinAccountProvider({ children }: { children: ReactNode }) {
   const attempt = useRef(0);
 
   const load = useCallback(async (nextAddress?: string) => {
-    const trimmed = (nextAddress ?? storedBitcoinAddress() ?? '').trim();
+    const trimmed = normalizeBitcoinAddress(nextAddress ?? storedBitcoinAddress() ?? '');
     if (!isBitcoinMainnetAddress(trimmed)) {
       setAddress('');
       setConfirmedSats(0);
       setUnconfirmedSats(0);
+      setTxCount(0);
       return '';
     }
     setAddress(trimmed);
@@ -82,6 +86,15 @@ export function BitcoinAccountProvider({ children }: { children: ReactNode }) {
       if (!response.ok) throw new Error(body.error || 'Could not read that Bitcoin address.');
       setConfirmedSats(body.confirmedSats);
       setUnconfirmedSats(body.unconfirmedSats);
+      setTxCount(body.txCount ?? 0);
+      const sats = body.confirmedSats + Math.max(0, body.unconfirmedSats);
+      if (sats === 0 && (body.txCount ?? 0) === 0) {
+        setHint('This receive address has never held Bitcoin. Coinbase Wallet → Receive often creates a new empty address. Open Bitcoin activity, tap a past receive, and copy that address.');
+      } else if (sats === 0) {
+        setHint('This address already spent its Bitcoin. Copy an address from a past receive in Coinbase Wallet → Bitcoin, not a fresh Receive code.');
+      } else {
+        setHint('');
+      }
       return trimmed;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not read that Bitcoin address.');
@@ -114,7 +127,7 @@ export function BitcoinAccountProvider({ children }: { children: ReactNode }) {
   }, [load]);
 
   const takeAddress = useCallback(async (nextAddress: string) => {
-    const trimmed = nextAddress.trim();
+    const trimmed = normalizeBitcoinAddress(nextAddress);
     if (!isBitcoinMainnetAddress(trimmed)) return '';
     setAwaitingAddress(false);
     setOtherWallet(false);
@@ -129,7 +142,7 @@ export function BitcoinAccountProvider({ children }: { children: ReactNode }) {
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return;
       void navigator.clipboard?.readText().then((text) => {
-        if (isBitcoinMainnetAddress(text.trim())) void takeAddress(text);
+        if (isBitcoinMainnetAddress(normalizeBitcoinAddress(text))) void takeAddress(text);
       }).catch(() => undefined);
     };
     document.addEventListener('visibilitychange', onVisible);
@@ -148,9 +161,9 @@ export function BitcoinAccountProvider({ children }: { children: ReactNode }) {
 
   const readClipboard = useCallback(async () => {
     try {
-      const text = (await navigator.clipboard.readText()).trim();
+      const text = normalizeBitcoinAddress(await navigator.clipboard.readText());
       if (!isBitcoinMainnetAddress(text)) {
-        setHint('Copy the bc1q… address from Coinbase Wallet → Bitcoin → Receive, then tap Paste from clipboard.');
+        setHint('Copy an address from a past Bitcoin receive in Coinbase Wallet, then tap Paste from clipboard.');
         return '';
       }
       const next = await takeAddress(text);
@@ -183,7 +196,7 @@ export function BitcoinAccountProvider({ children }: { children: ReactNode }) {
       setHint(COINBASE_HINT);
       void navigator.clipboard?.readText().then((text) => {
         if (attempt.current !== id) return;
-        if (isBitcoinMainnetAddress(text.trim())) void takeAddress(text).then((next) => {
+        if (isBitcoinMainnetAddress(normalizeBitcoinAddress(text))) void takeAddress(text).then((next) => {
           if (next) toast.success('Bitcoin ready', { description: next });
         });
       }).catch(() => undefined);
@@ -235,7 +248,7 @@ export function BitcoinAccountProvider({ children }: { children: ReactNode }) {
   }, [load]);
 
   const apply = useCallback(async (nextAddress: string) => {
-    const trimmed = nextAddress.trim();
+    const trimmed = normalizeBitcoinAddress(nextAddress);
     if (!isBitcoinMainnetAddress(trimmed)) {
       setHint('Paste a Bitcoin receive address from the wallet app.');
       return '';
@@ -255,6 +268,7 @@ export function BitcoinAccountProvider({ children }: { children: ReactNode }) {
     address,
     confirmedSats,
     unconfirmedSats,
+    txCount,
     sats: confirmedSats + Math.max(0, unconfirmedSats),
     loading,
     connecting,
@@ -274,7 +288,7 @@ export function BitcoinAccountProvider({ children }: { children: ReactNode }) {
     cancel,
     apply,
     reload: load,
-  }), [address, apply, awaitingAddress, cancel, confirmedSats, connect, connecting, error, hint, load, loading, pairingUri, pairOther, phone, readClipboard, unconfirmedSats, wallet, walletChoice, otherWallet]);
+  }), [address, apply, awaitingAddress, cancel, confirmedSats, connect, connecting, error, hint, load, loading, pairingUri, pairOther, phone, readClipboard, txCount, unconfirmedSats, wallet, walletChoice, otherWallet]);
 
   return <BitcoinAccountContext.Provider value={value}>{children}</BitcoinAccountContext.Provider>;
 }

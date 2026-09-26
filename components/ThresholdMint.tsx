@@ -15,7 +15,7 @@ import { formatBtcFromSats, formatUsdExact } from '@/lib/amount';
 import WalletQr from '@/components/WalletQr';
 import { sendBitcoin } from '@/lib/bitcoin-wallet';
 import { sendBitcoinWalletConnect } from '@/lib/bitcoin-wc';
-import { isTbtcRecoveryAddress } from '@/lib/btc';
+import { isTbtcRecoveryAddress, normalizeBitcoinAddress } from '@/lib/btc';
 import { chainLabel } from '@/lib/protocol';
 import {
   TBTC_DEFAULT_MIN_SATS,
@@ -187,7 +187,7 @@ export default function ThresholdMint({ btcPriceUsd }: { btcPriceUsd: number }) 
       ) : !bitcoin.address && !mint ? (
         <div className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            Coinbase Wallet does not send native Bitcoin to this page after a scan. Copy the receive address from Bitcoin → Receive, then paste it here. The on-chain balance appears next.
+            Coinbase Wallet does not send native Bitcoin to this page after a scan. Copy an address from a past Bitcoin receive — Receive often creates a new empty address.
           </p>
           <Button
             className="h-11 w-full bg-blue-600 text-white hover:bg-blue-700"
@@ -204,7 +204,7 @@ export default function ThresholdMint({ btcPriceUsd }: { btcPriceUsd: number }) 
             <div className="space-y-2 rounded-lg border p-3">
               <ol className="list-decimal space-y-1 pl-4 text-xs leading-relaxed text-muted-foreground">
                 <li>Open Coinbase Wallet → Bitcoin → Receive.</li>
-                <li>Copy the SegWit address that starts with bc1q.</li>
+                <li>Copy an address from a past Bitcoin receive, not a fresh Receive code.</li>
                 <li>Come back here and paste it, or tap Paste from clipboard.</li>
               </ol>
               <Button type="button" className="h-11 w-full bg-blue-600 text-white hover:bg-blue-700" onClick={() => void bitcoin.readClipboard()}>
@@ -238,7 +238,7 @@ export default function ThresholdMint({ btcPriceUsd }: { btcPriceUsd: number }) 
           )}
           <Input
             value={pasted}
-            onChange={(event) => setPasted(event.target.value.trim())}
+            onChange={(event) => setPasted(normalizeBitcoinAddress(event.target.value))}
             placeholder="bc1q… Bitcoin receive address"
             spellCheck={false}
             autoCapitalize="off"
@@ -271,6 +271,14 @@ export default function ThresholdMint({ btcPriceUsd }: { btcPriceUsd: number }) 
               {formatBtcFromSats(bitcoin.sats)} BTC
               {btcPriceUsd > 0 ? ` · ${formatUsdExact((bitcoin.sats / 1e8) * btcPriceUsd)}` : ''}
             </p>
+            <a
+              href={`https://mempool.space/address/${encodeURIComponent(bitcoin.address)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1 inline-block font-semibold text-blue-600 underline-offset-2 hover:underline"
+            >
+              {bitcoin.txCount === 0 ? 'Unused on-chain' : `${bitcoin.txCount} on-chain txs`}
+            </a>
             {!bitcoin.canMint && (
               <p className="mt-2 text-amber-700 dark:text-amber-400">
                 Threshold can refund only to a 1… or bc1q… address. Use the SegWit receive address from the wallet to convert.

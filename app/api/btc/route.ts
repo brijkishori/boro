@@ -1,4 +1,4 @@
-import { isBitcoinMainnetAddress } from '@/lib/btc';
+import { isBitcoinMainnetAddress, normalizeBitcoinAddress } from '@/lib/btc';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,26 +29,81 @@ function asNonNegative(value: unknown): number | null {
   return number;
 }
 
+const EXPLORERS = [
+  'https://mempool.space/api/address/',
+  'https://blockstream.info/api/address/',
+];
+
+function asCount(value: unknown): number | null {
+  if (typeof value === 'string' && /^\d+$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? asNonNegative(parsed) : null;
+  }
+  return asNonNegative(value);
+}
+
 async function readFees(): Promise<BtcSnapshot['fees']> {
   if (feeCache && Date.now() - feeCache.at < 30_000) return feeCache.fees;
-  const response = await fetch('https://mempool.space/api/v1/fees/recommended', {
-    headers: { Accept: 'application/json', 'User-Agent': 'boro/1.0' },
-    signal: AbortSignal.timeout(8_000),
-    cache: 'no-store',
-  });
-  if (!response.ok) throw new Error('fees unavailable');
-  const body = (await response.json()) as { fastestFee?: unknown; halfHourFee?: unknown; economyFee?: unknown };
-  const fastest = asNonNegative(body.fastestFee);
-  const halfHour = asNonNegative(body.halfHourFee);
-  const economy = asNonNegative(body.economyFee);
-  if (fastest === null || halfHour === null || economy === null) throw new Error('bad fees');
-  const fees = { fastest, halfHour, economy };
-  feeCache = { at: Date.now(), fees };
-  return fees;
+  try {
+    const response = await fetch('https://mempool.space/api/v1/fees/recommended', {
+      headers: { Accept: 'application/json', 'User-Agent': 'boro/1.0' },
+      signal: AbortSignal.timeout(8_000),
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error('fees unavailable');
+    const body = (await response.json()) as { fastestFee?: unknown; halfHourFee?: unknown; economyFee?: unknown };
+    const fastest = asCount(body.fastestFee);
+    const halfHour = asCount(body.halfHourFee);
+    const economy = asCount(body.economyFee);
+    if (fastest === null || halfHour === null || economy === null) throw new Error('bad fees');
+    const fees = { fastest, halfHour, economy };
+    feeCache = { at: Date.now(), fees };
+    return fees;
+  } catch {
+    return feeCache?.fees ?? { fastest: 1, halfHour: 1, economy: 1 };
+  }
+}
+
+async function readExplorer(address: string) {
+  let lastError = 'Bitcoin network lookup failed.';
+  for (const base of EXPLORERS) {
+    try {
+      const response = await fetch(`${base}${encodeURIComponent(address)}`, {
+        headers: { Accept: 'application/json', 'User-Agent': 'boro/1.0' },
+        signal: AbortSignal.timeout(8_000),
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        lastError = 'Bitcoin network lookup failed.';
+        continue;
+      }
+      const body = (await response.json()) as {
+        chain_stats?: { funded_txo_sum?: unknown; spent_txo_sum?: unknown; tx_count?: unknown };
+        mempool_stats?: { funded_txo_sum?: unknown; spent_txo_sum?: unknown };
+      };
+      const funded = asCount(body.chain_stats?.funded_txo_sum);
+      const spent = asCount(body.chain_stats?.spent_txo_sum);
+      const pendingIn = asCount(body.mempool_stats?.funded_txo_sum);
+      const pendingOut = asCount(body.mempool_stats?.spent_txo_sum);
+      const txCount = asCount(body.chain_stats?.tx_count);
+      if (funded === null || spent === null || pendingIn === null || pendingOut === null || txCount === null) {
+        lastError = 'Bitcoin network returned an unexpected balance.';
+        continue;
+      }
+      return {
+        confirmedSats: Math.max(0, funded - spent),
+        unconfirmedSats: pendingIn - pendingOut,
+        txCount,
+      };
+    } catch {
+      lastError = 'Bitcoin network lookup failed.';
+    }
+  }
+  throw new Error(lastError);
 }
 
 export async function GET(request: Request) {
-  const address = new URL(request.url).searchParams.get('address')?.trim() ?? '';
+  const address = normalizeBitcoinAddress(new URL(request.url).searchParams.get('address') ?? '');
   if (!isBitcoinMainnetAddress(address)) {
     return Response.json({ error: 'Enter a valid Bitcoin mainnet address.' }, { status: 400 });
   }
@@ -59,39 +114,13 @@ export async function GET(request: Request) {
   }
 
   try {
-    const [addressResponse, fees] = await Promise.all([
-      fetch(`https://mempool.space/api/address/${encodeURIComponent(address)}`, {
-        headers: { Accept: 'application/json', 'User-Agent': 'boro/1.0' },
-        signal: AbortSignal.timeout(8_000),
-        cache: 'no-store',
-      }),
-      readFees(),
-    ]);
-    if (!addressResponse.ok) {
-      return Response.json({ error: 'Bitcoin network lookup failed.' }, { status: 502 });
-    }
-    const body = (await addressResponse.json()) as {
-      chain_stats?: { funded_txo_sum?: unknown; spent_txo_sum?: unknown; tx_count?: unknown };
-      mempool_stats?: { funded_txo_sum?: unknown; spent_txo_sum?: unknown };
-    };
-    const funded = asNonNegative(body.chain_stats?.funded_txo_sum);
-    const spent = asNonNegative(body.chain_stats?.spent_txo_sum);
-    const pendingIn = asNonNegative(body.mempool_stats?.funded_txo_sum);
-    const pendingOut = asNonNegative(body.mempool_stats?.spent_txo_sum);
-    const txCount = asNonNegative(body.chain_stats?.tx_count);
-    if (funded === null || spent === null || pendingIn === null || pendingOut === null || txCount === null) {
-      return Response.json({ error: 'Bitcoin network returned an unexpected balance.' }, { status: 502 });
-    }
-    const snapshot: BtcSnapshot = {
-      address,
-      confirmedSats: Math.max(0, funded - spent),
-      unconfirmedSats: pendingIn - pendingOut,
-      txCount,
-      fees,
-    };
+    const [stats, fees] = await Promise.all([readExplorer(address), readFees()]);
+    const snapshot: BtcSnapshot = { address, ...stats, fees };
     remember(address, snapshot);
     return Response.json(snapshot, { headers: { 'Cache-Control': 'no-store' } });
-  } catch {
-    return Response.json({ error: 'Bitcoin network lookup failed.' }, { status: 502 });
+  } catch (error) {
+    return Response.json({
+      error: error instanceof Error ? error.message : 'Bitcoin network lookup failed.',
+    }, { status: 502 });
   }
 }

@@ -132,8 +132,18 @@ function isBech32MainnetAddress(address: string): boolean {
   return true;
 }
 
+/** Strips bitcoin: URIs, query strings, and wallet copy/paste junk. */
+export function normalizeBitcoinAddress(value: string): string {
+  let text = value.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+  const uri = text.match(/^bitcoin:([^?/\s]+)/i);
+  if (uri) text = decodeURIComponent(uri[1]);
+  text = text.split(/[?#]/)[0]?.trim() ?? '';
+  if (/^bc1/i.test(text)) return text.replace(/\s+/g, '').toLowerCase();
+  return text.replace(/\s+/g, '');
+}
+
 export function isBitcoinMainnetAddress(address: string): boolean {
-  const trimmed = address.trim();
+  const trimmed = normalizeBitcoinAddress(address);
   if (trimmed.startsWith('bc1') || trimmed.startsWith('BC1')) return isBech32MainnetAddress(trimmed);
   return isBase58MainnetAddress(trimmed);
 }

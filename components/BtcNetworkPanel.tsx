@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { formatBtcFromSats, formatUsd } from '@/lib/amount';
+import { normalizeBitcoinAddress } from '@/lib/btc';
 
 export default function BtcNetworkPanel({ btcPriceUsd }: { btcPriceUsd: number }) {
   const bitcoin = useBitcoinAccount();
@@ -21,13 +22,13 @@ export default function BtcNetworkPanel({ btcPriceUsd }: { btcPriceUsd: number }
         <div>
           <p className="text-sm font-semibold">Bitcoin network</p>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            Paste the Bitcoin receive address from Coinbase Wallet → Bitcoin → Receive. This page then reads the on-chain balance. Lending still settles on Ethereum or Base through tBTC.
+            Paste an address that already received Bitcoin. Coinbase Wallet → Receive often copies a new empty address even when the wallet still shows a balance.
           </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input
             value={draft || bitcoin.address}
-            onChange={(event) => setDraft(event.target.value.trim())}
+            onChange={(event) => setDraft(normalizeBitcoinAddress(event.target.value))}
             placeholder="bc1... or a legacy address"
             spellCheck={false}
             autoCapitalize="off"
@@ -57,7 +58,7 @@ export default function BtcNetworkPanel({ btcPriceUsd }: { btcPriceUsd: number }
           <div className="space-y-2 rounded-lg border p-3">
             <ol className="list-decimal space-y-1 pl-4 text-xs leading-relaxed text-muted-foreground">
               <li>Open Coinbase Wallet → Bitcoin → Receive.</li>
-              <li>Copy the SegWit address that starts with bc1q.</li>
+              <li>Copy an address from a past Bitcoin receive, not a fresh Receive code.</li>
               <li>Paste it here, or tap Paste from clipboard.</li>
             </ol>
             <Button type="button" className="h-11 w-full bg-blue-600 text-white hover:bg-blue-700" onClick={() => void bitcoin.readClipboard()}>
@@ -108,6 +109,14 @@ export default function BtcNetworkPanel({ btcPriceUsd }: { btcPriceUsd: number }
             <div>
               <p className="text-[10px] font-semibold uppercase text-muted-foreground">Address</p>
               <p className="break-all font-mono text-xs">{bitcoin.address}</p>
+              <a
+                href={`https://mempool.space/address/${encodeURIComponent(bitcoin.address)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-1 inline-block text-xs font-semibold text-blue-600 underline-offset-2 hover:underline"
+              >
+                {bitcoin.txCount === 0 ? 'Unused on-chain' : `${bitcoin.txCount} on-chain txs`}
+              </a>
             </div>
           </div>
         )}
