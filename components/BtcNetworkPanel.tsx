@@ -1,118 +1,104 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import WalletQr from '@/components/WalletQr';
+import { useBitcoinAccount } from '@/components/useBitcoinAccount';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { formatBtcFromSats, formatUsd } from '@/lib/amount';
-import { isBitcoinMainnetAddress } from '@/lib/btc';
-
-type Snapshot = {
-  address: string;
-  confirmedSats: number;
-  unconfirmedSats: number;
-  txCount: number;
-  fees: { fastest: number; halfHour: number; economy: number };
-};
-
-const STORAGE_KEY = 'boro_btc_address';
-
-type BitcoinProvider = {
-  requestAccounts?: () => Promise<string[]>;
-};
 
 export default function BtcNetworkPanel({ btcPriceUsd }: { btcPriceUsd: number }) {
-  const [address, setAddress] = useState('');
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [hasWallet, setHasWallet] = useState(false);
+  const bitcoin = useBitcoinAccount();
+  const [draft, setDraft] = useState('');
 
-  useEffect(() => {
-    const saved = window.localStorage.getItem(STORAGE_KEY) ?? '';
-    if (isBitcoinMainnetAddress(saved)) setAddress(saved);
-    setHasWallet(typeof (window as Window & { unisat?: BitcoinProvider }).unisat?.requestAccounts === 'function');
-  }, []);
-
-  async function lookup(nextAddress: string) {
-    const trimmed = nextAddress.trim();
-    if (!isBitcoinMainnetAddress(trimmed)) {
-      setSnapshot(null);
-      setError('Enter a valid Bitcoin mainnet address.');
-      return;
-    }
-    setLoading(true);
-    setError('');
-    try {
-      const response = await fetch(`/api/btc?address=${encodeURIComponent(trimmed)}`, { cache: 'no-store' });
-      const body = (await response.json()) as Snapshot & { error?: string };
-      if (!response.ok) throw new Error(body.error || 'Lookup failed');
-      setSnapshot(body);
-      window.localStorage.setItem(STORAGE_KEY, trimmed);
-    } catch (err) {
-      setSnapshot(null);
-      setError(err instanceof Error ? err.message : 'Lookup failed');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function connectWallet() {
-    const provider = (window as Window & { unisat?: BitcoinProvider }).unisat;
-    if (!provider?.requestAccounts) {
-      setError('No Bitcoin wallet was found. Paste an address instead.');
-      return;
-    }
-    try {
-      const accounts = await provider.requestAccounts();
-      const next = accounts[0] ?? '';
-      if (!isBitcoinMainnetAddress(next)) {
-        setError('The wallet returned an address this app will not use.');
-        return;
-      }
-      setAddress(next);
-      await lookup(next);
-    } catch {
-      setError('Bitcoin wallet connection was rejected.');
-    }
-  }
-
-  const confirmedBtc = snapshot ? formatBtcFromSats(snapshot.confirmedSats) : null;
-  const confirmedUsd = snapshot && btcPriceUsd > 0 ? (snapshot.confirmedSats / 1e8) * btcPriceUsd : null;
+  const confirmedBtc = bitcoin.address ? formatBtcFromSats(bitcoin.confirmedSats) : null;
+  const confirmedUsd = bitcoin.address && btcPriceUsd > 0 ? (bitcoin.confirmedSats / 1e8) * btcPriceUsd : null;
 
   return (
     <Card className="border-muted shadow-sm">
       <CardContent className="space-y-3 p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold">Bitcoin network</p>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              Reads your Bitcoin balance from the public network. Lending still settles on Ethereum or Base through tBTC, which is backed by native BTC and does not use cbBTC. This app never creates a deposit address and never asks for a Bitcoin private key.
-            </p>
-          </div>
+        <div>
+          <p className="text-sm font-semibold">Bitcoin network</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            Paste the Bitcoin receive address from Coinbase Wallet → Bitcoin → Receive. This page then reads the on-chain balance. Lending still settles on Ethereum or Base through tBTC.
+          </p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input
-            value={address}
-            onChange={(event) => setAddress(event.target.value.trim())}
+            value={draft || bitcoin.address}
+            onChange={(event) => setDraft(event.target.value.trim())}
             placeholder="bc1... or a legacy address"
             spellCheck={false}
             autoCapitalize="off"
             className="h-11 font-mono text-xs"
           />
           <div className="flex gap-2">
-            <Button type="button" variant="outline" className="h-11" disabled={loading} onClick={() => void lookup(address)}>
-              {loading ? 'Reading...' : 'Read balance'}
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11"
+              disabled={bitcoin.loading}
+              onClick={() => void bitcoin.apply(draft || bitcoin.address)}
+            >
+              {bitcoin.loading ? 'Reading...' : 'Read balance'}
             </Button>
-            {hasWallet && (
-              <Button type="button" className="h-11 bg-blue-600 text-white hover:bg-blue-700" onClick={() => void connectWallet()}>
-                Wallet
-              </Button>
-            )}
+            <Button
+              type="button"
+              className="h-11 bg-blue-600 text-white hover:bg-blue-700"
+              disabled={bitcoin.connecting}
+              onClick={() => void bitcoin.connect()}
+            >
+              {bitcoin.connecting ? 'Looking…' : 'Use wallet'}
+            </Button>
           </div>
         </div>
-        {error && <p className="text-xs font-medium text-red-500">{error}</p>}
-        {snapshot && (
+        {bitcoin.awaitingAddress && (
+          <div className="space-y-2 rounded-lg border p-3">
+            <ol className="list-decimal space-y-1 pl-4 text-xs leading-relaxed text-muted-foreground">
+              <li>Open Coinbase Wallet → Bitcoin → Receive.</li>
+              <li>Copy the SegWit address that starts with bc1q.</li>
+              <li>Paste it here, or tap Paste from clipboard.</li>
+            </ol>
+            <Button type="button" className="h-11 w-full bg-blue-600 text-white hover:bg-blue-700" onClick={() => void bitcoin.readClipboard()}>
+              Paste from clipboard
+            </Button>
+            <Button type="button" variant="ghost" className="h-9 w-full text-xs" onClick={() => bitcoin.cancel()}>
+              Cancel
+            </Button>
+          </div>
+        )}
+        {bitcoin.pairingUri && bitcoin.phone && bitcoin.openHref && (
+          <div className="space-y-2">
+            <Button asChild className="h-11 w-full bg-blue-600 text-white hover:bg-blue-700">
+              <a href={bitcoin.openHref}>Open Bitcoin wallet</a>
+            </Button>
+            <Button type="button" variant="ghost" className="h-9 w-full text-xs" onClick={() => bitcoin.cancel()}>
+              Cancel
+            </Button>
+          </div>
+        )}
+        {bitcoin.pairingUri && !bitcoin.phone && (
+          <div className="space-y-2">
+            <WalletQr uri={bitcoin.scanUri || bitcoin.pairingUri} />
+            <p className="text-xs text-muted-foreground">
+              Scan with UniSat, OKX, or Phantom. Coinbase Wallet will not finish this pairing.
+            </p>
+            <Button type="button" variant="ghost" className="h-9 w-full text-xs" onClick={() => bitcoin.cancel()}>
+              Cancel
+            </Button>
+          </div>
+        )}
+        <button
+          type="button"
+          className="text-left text-xs font-semibold text-blue-600 underline-offset-2 hover:underline"
+          onClick={() => void bitcoin.pairOther()}
+        >
+          I use UniSat, OKX, or Phantom
+        </button>
+        {bitcoin.hint && <p className="text-xs text-muted-foreground">{bitcoin.hint}</p>}
+        {bitcoin.error && <p className="text-xs font-medium text-red-500">{bitcoin.error}</p>}
+        {bitcoin.address && (
           <div className="grid grid-cols-2 gap-3 text-sm">
             <div>
               <p className="text-[10px] font-semibold uppercase text-muted-foreground">Confirmed</p>
@@ -120,23 +106,18 @@ export default function BtcNetworkPanel({ btcPriceUsd }: { btcPriceUsd: number }
               <p className="text-xs text-muted-foreground">{confirmedUsd === null ? 'Price unavailable' : formatUsd(confirmedUsd)}</p>
             </div>
             <div>
-              <p className="text-[10px] font-semibold uppercase text-muted-foreground">Next block fee</p>
-              <p className="font-bold">{snapshot.fees.fastest} sat/vB</p>
-              <p className="text-xs text-muted-foreground">{snapshot.txCount.toLocaleString()} confirmed txs</p>
+              <p className="text-[10px] font-semibold uppercase text-muted-foreground">Address</p>
+              <p className="break-all font-mono text-xs">{bitcoin.address}</p>
             </div>
           </div>
         )}
-        {snapshot && snapshot.unconfirmedSats !== 0 && (
+        {bitcoin.address && bitcoin.unconfirmedSats !== 0 && (
           <p className="text-xs text-muted-foreground">
-            Unconfirmed change: {formatBtcFromSats(Math.abs(snapshot.unconfirmedSats))} BTC {snapshot.unconfirmedSats > 0 ? 'incoming' : 'outgoing'}.
+            Unconfirmed change: {formatBtcFromSats(Math.abs(bitcoin.unconfirmedSats))} BTC {bitcoin.unconfirmedSats > 0 ? 'incoming' : 'outgoing'}.
           </p>
         )}
         <p className="text-xs text-muted-foreground">
-          To turn this Bitcoin into tBTC, use <span className="font-semibold">Get tBTC</span> above. If you already hold cbBTC, swap it there. Native BTC uses Threshold’s current mint at{' '}
-          <a href="https://app.threshold.network/" target="_blank" rel="noreferrer" className="font-semibold text-blue-600 hover:underline">
-            app.threshold.network
-          </a>
-          , not the old dashboard.
+          To turn this Bitcoin into tBTC, use <span className="font-semibold">Get tBTC</span> above.
         </p>
       </CardContent>
     </Card>

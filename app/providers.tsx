@@ -6,6 +6,7 @@ import { WagmiProvider } from 'wagmi';
 import { RainbowKitProvider, darkTheme, lightTheme } from '@rainbow-me/rainbowkit';
 import { ThemeProvider as NextThemesProvider, useTheme } from 'next-themes';
 import { config } from '@/lib/config';
+import { BitcoinAccountProvider } from '@/components/BitcoinAccount';
 import { NetworkFilterProvider } from '@/components/NetworkFilter';
 
 const queryClient = new QueryClient();
@@ -38,7 +39,9 @@ function RainbowWrapper({ children }: { children: React.ReactNode }) {
       // 3. Force it to match the server's light theme until mounted, then apply dark mode safely
       theme={mounted && resolvedTheme === 'dark' ? darkTheme() : lightTheme()}
     >
-      <NetworkFilterProvider>{children}</NetworkFilterProvider>
+      <NetworkFilterProvider>
+        <BitcoinAccountProvider>{children}</BitcoinAccountProvider>
+      </NetworkFilterProvider>
     </RainbowKitProvider>
   );
 }

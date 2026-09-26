@@ -13,7 +13,7 @@ export default function WalletQr({ uri }: { uri: string }) {
     }
     let cancelled = false;
     void import('qrcode').then(({ toDataURL }) => toDataURL(uri, {
-      errorCorrectionLevel: 'Q',
+      errorCorrectionLevel: uri.length > 180 ? 'M' : 'Q',
       margin: 4,
       width: 320,
       color: { dark: '#111111', light: '#ffffff' },

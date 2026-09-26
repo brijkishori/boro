@@ -54,8 +54,10 @@ export function isCoinbaseLink(uri: string) {
   const secret = params.get('secret');
   const server = params.get('server');
   const chainId = params.get('chainId');
+  const version = params.get('v');
   if (!id || !/^[a-f0-9]{32}$/.test(id)) return false;
   if (!secret || !/^[a-f0-9]{64}$/.test(secret)) return false;
+  if (version && !/^\d+(\.\d+){0,2}$/.test(version)) return false;
   if (!chainId || !/^\d{1,10}$/.test(chainId)) return false;
   try {
     const serverUrl = new URL(server ?? '');
@@ -66,21 +68,44 @@ export function isCoinbaseLink(uri: string) {
   return true;
 }
 
+/** Coinbase Wallet's camera accepts this HTTPS wrap and rejects a raw wc: code. */
+export function isCoinbaseWalletConnectLink(uri: string) {
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:' || url.hostname !== 'go.cb-w.com') return false;
+  if (url.username || url.password || url.hash) return false;
+  if (url.pathname !== '/wc') return false;
+  const wc = url.searchParams.get('uri');
+  return Boolean(wc && isWalletConnectUri(wc));
+}
+
 export function isScannableUri(uri: string) {
-  return isWalletConnectUri(uri) || isCoinbaseLink(uri);
+  return isWalletConnectUri(uri) || isCoinbaseLink(uri) || isCoinbaseWalletConnectLink(uri);
+}
+
+/** QR payload Coinbase Wallet can actually parse. Raw wc: shows as "QR not recognized". */
+export function scannableWalletUri(choiceId: string, uri: string) {
+  if (!uri) return '';
+  if (isCoinbaseLink(uri) || isCoinbaseWalletConnectLink(uri)) return uri;
+  if (choiceId === 'coinbase') return walletConnectLink('coinbase', uri) || uri;
+  return uri;
 }
 
 export function coinbaseLinkFromStorage(chainId: number) {
   if (typeof window === 'undefined') return '';
   const id = window.localStorage.getItem(`${COINBASE_STORAGE}session:id`);
   const secret = window.localStorage.getItem(`${COINBASE_STORAGE}session:secret`);
-  const version = window.localStorage.getItem(`${COINBASE_STORAGE}version`);
-  if (!id || !secret || !version || !/^\d+\.\d+\.\d+$/.test(version)) return '';
+  const version = window.localStorage.getItem(`${COINBASE_STORAGE}version`) ?? '1';
+  if (!id || !secret) return '';
   const params = new URLSearchParams({
     id,
     secret,
     server: COINBASE_ORIGIN,
-    v: version,
+    v: /^\d+(\.\d+){0,2}$/.test(version) ? version : '1',
     chainId: String(chainId),
   });
   const link = `${COINBASE_ORIGIN}/#/link?${params.toString()}`;
@@ -97,6 +122,12 @@ export function isPhone() {
   const ua = navigator.userAgent || '';
   if (/Android|iPhone|iPad|iPod|Mobile|IEMobile|Opera Mini/i.test(ua)) return true;
   return navigator.maxTouchPoints > 1 && window.matchMedia('(pointer: coarse)').matches && window.innerWidth < 900;
+}
+
+/** Coinbase's in-app browser only. Desktop WalletLink also sets isCoinbaseWallet. */
+export function isCoinbaseDappBrowser() {
+  if (typeof navigator === 'undefined') return false;
+  return /CoinbaseWallet|CBWallet/i.test(navigator.userAgent || '');
 }
 
 export function inAppWalletId(): string | null {

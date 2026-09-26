@@ -26,6 +26,7 @@ import {
   openWalletUrl,
   phoneFallbackHref,
   phoneOpenHref,
+  scannableWalletUri,
   walletDappUrl,
   type WalletChoice,
 } from '@/lib/wallets';
@@ -269,33 +270,30 @@ export default function CustomConnectButton() {
     }
     setPendingId(coinbaseMobile.uid);
     try {
-      await coinbaseReset.current;
+      await withTimeout(coinbaseReset.current, 3_000).catch(() => undefined);
       if (qrAttempt.current !== attempt) return;
-      await withTimeout(coinbaseMobile.getProvider(), 8_000);
-      let link = coinbaseLinkFromStorage(base.id);
+      const connectPromise = withTimeout(
+        connectAsync({ connector: coinbaseMobile, ...connectChain() }),
+        120_000,
+      );
       const started = Date.now();
-      while (!link && Date.now() - started < 2_500) {
+      let link = coinbaseLinkFromStorage(base.id);
+      while (!link && Date.now() - started < 8_000) {
         await new Promise((resolve) => window.setTimeout(resolve, 50));
         if (qrAttempt.current !== attempt) return;
         link = coinbaseLinkFromStorage(base.id);
       }
       if (qrAttempt.current !== attempt) return;
-      if (!link) {
-        if (phone) {
-          setError('Coinbase Wallet could not start a session. Close and try again.');
-          setPendingId(null);
-          return;
-        }
-        const extension = connectors.find((item) => item.id === 'coinbaseExtension') ?? coinbaseMobile;
-        setQrWallet(null);
-        setUri('');
-        await withTimeout(connectAsync({ connector: extension, ...connectChain() }), 20_000);
+      if (link) {
+        setUri(link);
+        await connectPromise;
         if (qrAttempt.current === attempt) toast.success(`${choice.name} connected`);
         return;
       }
-      setUri(link);
-      await connectAsync({ connector: coinbaseMobile, ...connectChain() });
-      if (qrAttempt.current === attempt) toast.success(`${choice.name} connected`);
+      await coinbaseMobile.disconnect().catch(() => undefined);
+      if (qrAttempt.current !== attempt) return;
+      expectingUri.current = true;
+      await startQr(choice);
     } catch (caught) {
       if (qrAttempt.current !== attempt) return;
       setError(failureMessage(caught, choice.name));
@@ -315,7 +313,7 @@ export default function CustomConnectButton() {
     }
     setPendingId(walletConnect.uid);
     try {
-      await walletConnect.disconnect().catch(() => undefined);
+      await withTimeout(walletConnect.disconnect(), 3_000).catch(() => undefined);
       if (qrAttempt.current !== attempt) return;
       await connectAsync({ connector: walletConnect, ...connectChain() });
       if (qrAttempt.current === attempt) toast.success(`${choice.name} connected`);
@@ -350,7 +348,8 @@ export default function CustomConnectButton() {
 
   async function choose(choice: WalletChoice) {
     setError('');
-    const injectedHere = installed.includes(choice.desktopId) || inAppWalletId() === choice.id;
+    const wantPhoneQr = !phone && device === 'mobile';
+    const injectedHere = !wantPhoneQr && (installed.includes(choice.desktopId) || inAppWalletId() === choice.id);
     if (injectedHere) {
       try {
         await connectInjected(choice);
@@ -622,7 +621,7 @@ export default function CustomConnectButton() {
                       )}
                     </>
                   ) : isScannableUri(uri) ? (
-                    <WalletQr uri={uri} />
+                    <WalletQr uri={scannableWalletUri(qrWallet.id, uri)} />
                   ) : (
                     <p className="py-16 text-sm text-muted-foreground">Creating a secure connection code…</p>
                   )}

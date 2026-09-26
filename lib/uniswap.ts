@@ -97,11 +97,25 @@ export const swapRouterAbi = [
   },
 ] as const;
 
+export type RelaySwapStep = {
+  kind: 'approve' | 'deposit';
+  to: Address;
+  data: Hex;
+  value: bigint;
+  chainId: number;
+};
+
 export type SwapQuote = {
   out: bigint;
   fee?: number;
   path?: Hex;
+  destChainId?: ChainId;
+  steps?: RelaySwapStep[];
 };
+
+export function tbtcToken(chainId: ChainId) {
+  return token(chainId, 'tBTC');
+}
 
 export function encodeUniPath(tokens: Address[], fees: number[]): Hex {
   const parts: Hex[] = [tokens[0]];
@@ -158,7 +172,6 @@ export const TBTC_ROUTES: SwapRoute[] = [
   },
 ];
 
-export const THRESHOLD_MINT_URL = 'https://app.threshold.network/';
 export const SLIPPAGE_BPS = 100n;
 
 export function uniswapSwapUrl(route: SwapRoute) {

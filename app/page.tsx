@@ -1,26 +1,27 @@
 'use client';
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
 import { useAccount, useConnect } from 'wagmi';
 import type { Address } from 'viem';
-import sdk from '@farcaster/frame-sdk';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import BorrowFlow from '@/components/BorrowFlow';
 import LendFlow from '@/components/LendFlow';
 import RepayFlow from '@/components/RepayFlow';
-import FeeHistory from '@/components/FeeHistory';
 import PortfolioCard from '@/components/PortfolioCard';
 import Opportunities from '@/components/Opportunities';
 import { useAllPositions } from '@/components/useAllPositions';
 import MarketGuidance from '@/components/MarketGuidance';
 import QuoteBoard from '@/components/QuoteBoard';
-import BtcNetworkPanel from '@/components/BtcNetworkPanel';
-import CbBtcConvert from '@/components/CbBtcConvert';
-import TbtcConvert from '@/components/TbtcConvert';
-import TipJar from '@/components/TipJar';
+
+const FeeHistory = dynamic(() => import('@/components/FeeHistory'), { ssr: false });
+const TbtcConvert = dynamic(() => import('@/components/TbtcConvert'), { ssr: false });
+const BtcNetworkPanel = dynamic(() => import('@/components/BtcNetworkPanel'), { ssr: false });
+const CbBtcConvert = dynamic(() => import('@/components/CbBtcConvert'), { ssr: false });
+const TipJar = dynamic(() => import('@/components/TipJar'), { ssr: false });
 import { useRates } from '@/components/useRates';
 import { formatApr, formatUsd } from '@/lib/amount';
 import { NetworkPicker, useNetworkFilter } from '@/components/NetworkFilter';
@@ -66,11 +67,9 @@ function Dashboard() {
         // Outside a Farcaster frame this connector has nothing to attach to.
       });
     }
-    try {
+    void import('@farcaster/frame-sdk').then(({ default: sdk }) => {
       void sdk.actions.ready();
-    } catch {
-      // The Farcaster frame SDK is a no-op outside that client.
-    }
+    }).catch(() => undefined);
   }, [connectors, connectAsync, isConnected]);
 
   const action: VenueAction = mode === 'lend' ? 'lend' : 'borrow';

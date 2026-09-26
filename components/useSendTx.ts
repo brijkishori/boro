@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { useAccount, useWaitForTransactionReceipt, useWriteContract } from 'wagmi';
-import type { Hex } from 'viem';
+import { useAccount, useSendTransaction, useWaitForTransactionReceipt, useWriteContract } from 'wagmi';
+import type { Address, Hex } from 'viem';
 import { toast } from 'sonner';
 import { AUDIT_ACTIONS_SET, buildAuditEvent, persistAuditEvent, type AuditAction, type AuditVenue } from '@/lib/audit';
 import { formatToken } from '@/lib/amount';
@@ -32,6 +32,7 @@ const ACTION_LABELS: Record<string, string> = {
   withdraw: 'Withdrawal',
   isolate: 'Collateral setting',
   swap: 'Swap',
+  mint: 'tBTC mint',
 };
 
 export function actionLabel(action: string) {
@@ -49,9 +50,17 @@ function errorText(error: unknown) {
   return text ? (text.length > 160 ? `${text.slice(0, 160)}…` : text) : 'The transaction was not sent.';
 }
 
+export type RawTx = {
+  to: Address;
+  data: Hex;
+  value?: bigint;
+  chainId: number;
+};
+
 export function useSendTx() {
   const { connector } = useAccount();
   const { writeContractAsync, isPending } = useWriteContract();
+  const { sendTransactionAsync, isPending: isSending } = useSendTransaction();
   const [hash, setHash] = useState<Hex | undefined>();
   const [chainId, setChainId] = useState<number | undefined>();
   const [confirmed, setConfirmed] = useState<{ nonce: number; action: string } | null>(null);
@@ -107,7 +116,7 @@ export function useSendTx() {
     toast.error('The transaction reverted on-chain. Nothing moved.', { id: hash });
   }, [hash, isError]);
 
-  async function send(action: string, args: WriteArgs, context?: TxContext) {
+  async function start(action: string, nextChainId: number, sendFn: () => Promise<Hex>, context?: TxContext) {
     actionRef.current = action;
     contextRef.current = context ?? null;
     const label = ACTION_LABELS[action] ?? 'Transaction';
@@ -116,8 +125,8 @@ export function useSendTx() {
       : `Confirm the ${label.toLowerCase()} in your wallet.`;
     const toastId = toast.loading(prompt);
     try {
-      const txHash = await writeContractAsync(args);
-      setChainId(args.chainId);
+      const txHash = await sendFn();
+      setChainId(nextChainId);
       setHash(txHash);
       toast.dismiss(toastId);
       toast.loading(`${label} sent. Waiting for the network to confirm…`, { id: txHash });
@@ -126,5 +135,24 @@ export function useSendTx() {
     }
   }
 
-  return { send, isBusy: isPending || isLoading, isAwaitingWallet: isPending, confirmed };
+  async function send(action: string, args: WriteArgs, context?: TxContext) {
+    await start(action, args.chainId as number, () => writeContractAsync(args), context);
+  }
+
+  async function sendRaw(action: string, tx: RawTx, context?: TxContext) {
+    await start(action, tx.chainId, () => sendTransactionAsync({
+      to: tx.to,
+      data: tx.data,
+      value: tx.value ?? 0n,
+      chainId: tx.chainId,
+    }), context);
+  }
+
+  return {
+    send,
+    sendRaw,
+    isBusy: isPending || isSending || Boolean(hash && isLoading && !isSuccess && !isError),
+    isAwaitingWallet: isPending || isSending,
+    confirmed,
+  };
 }

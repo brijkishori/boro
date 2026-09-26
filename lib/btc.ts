@@ -67,6 +67,19 @@ function hrpExpand(hrp: string): number[] {
   return expanded;
 }
 
+function bech32Checksum(hrp: string, data: number[], constant: number): number[] {
+  const mod = polymod(hrpExpand(hrp).concat(data).concat([0, 0, 0, 0, 0, 0])) ^ constant;
+  return [0, 1, 2, 3, 4, 5].map((index) => (mod >> (5 * (5 - index))) & 31);
+}
+
+export function encodeBech32(hrp: string, version: number, program: Uint8Array): string {
+  const converted = convertBits([...program], 8, 5, true);
+  if (!converted) throw new Error('Could not encode that Bitcoin address.');
+  const data = [version, ...converted];
+  const checksum = bech32Checksum(hrp, data, version === 0 ? 1 : 0x2bc830a3);
+  return `${hrp}1${[...data, ...checksum].map((value) => BECH32_CHARSET[value]).join('')}`;
+}
+
 function convertBits(data: number[], from: number, to: number, pad: boolean): number[] | null {
   let acc = 0;
   let bits = 0;
@@ -123,4 +136,40 @@ export function isBitcoinMainnetAddress(address: string): boolean {
   const trimmed = address.trim();
   if (trimmed.startsWith('bc1') || trimmed.startsWith('BC1')) return isBech32MainnetAddress(trimmed);
   return isBase58MainnetAddress(trimmed);
+}
+
+function bech32Program(address: string): { version: number; program: number[] } | null {
+  const normalized = address.trim().toLowerCase();
+  if (!isBech32MainnetAddress(normalized)) return null;
+  const separator = normalized.lastIndexOf('1');
+  const data: number[] = [];
+  for (const char of normalized.slice(separator + 1)) data.push(BECH32_CHARSET.indexOf(char));
+  const program = convertBits(data.slice(1, -6), 5, 8, false);
+  if (!program) return null;
+  return { version: data[0], program };
+}
+
+/** Threshold only refunds to a P2PKH (1…) or P2WPKH (bc1q…) address you control. */
+export function isTbtcRecoveryAddress(address: string): boolean {
+  const trimmed = address.trim();
+  if (trimmed.startsWith('1')) {
+    const decoded = base58Decode(trimmed);
+    return Boolean(decoded && decoded.length === 25 && decoded[0] === 0x00 && isBase58MainnetAddress(trimmed));
+  }
+  if (trimmed.startsWith('bc1q') || trimmed.startsWith('BC1Q')) {
+    const decoded = bech32Program(trimmed);
+    return Boolean(decoded && decoded.version === 0 && decoded.program.length === 20);
+  }
+  return false;
+}
+
+export function recoveryPubKeyHash(address: string): Uint8Array | null {
+  const trimmed = address.trim();
+  if (!isTbtcRecoveryAddress(trimmed)) return null;
+  if (trimmed.startsWith('1')) {
+    const decoded = base58Decode(trimmed);
+    return decoded ? decoded.subarray(1, 21) : null;
+  }
+  const decoded = bech32Program(trimmed);
+  return decoded ? Uint8Array.from(decoded.program) : null;
 }
