@@ -1,3 +1,4 @@
+import type { StoredRecommendedPlan } from '@/lib/finance/recommendedAlerts';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getAddress, isAddress } from 'viem';
 import { storeGet, storeSadd, storeSet, storeSetJson, storeSmembers, storeJson, type Json } from '@/lib/store';
@@ -22,6 +23,7 @@ export type AlertSubscriber = {
   lastWeekly?: string;
   lastMonthly?: string;
   lastThresholdUsd?: number;
+  positionPlans?: StoredRecommendedPlan[];
 };
 
 export const DEFAULT_RULES: AlertRules = {

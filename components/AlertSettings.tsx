@@ -5,12 +5,14 @@ import { useAccount } from 'wagmi';
 import { toast } from 'sonner';
 import { TEST_ALERT_OPTIONS, type AlertKind } from '@/lib/alertKinds';
 import { markLoanAlertChecked, readLoanAlertRule, writeLoanAlertRule, type LoanAlertRule } from '@/lib/finance/loanAlerts';
+import RecommendedAlerts from '@/components/RecommendedAlerts';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { protocolLabel, chainLabel } from '@/lib/protocol';
 import type { OpenPosition } from '@/components/useAllPositions';
+import type { StoredRecommendedPlan } from '@/lib/finance/recommendedAlerts';
 
-type Status = { configured: boolean; subscriber: { email: string; confirmed: boolean; rules: { weekly: boolean; monthly: boolean; thresholdUsd: number; timeZone: string } } | null };
+type Status = { configured: boolean; subscriber: { email: string; confirmed: boolean; rules: { weekly: boolean; monthly: boolean; thresholdUsd: number; timeZone: string }; positionPlans?: StoredRecommendedPlan[] } | null };
 
 export default function AlertSettings({ loans = [] }: { loans?: OpenPosition[] }) {
   const { address, isConnected } = useAccount();
@@ -179,7 +181,10 @@ export default function AlertSettings({ loans = [] }: { loans?: OpenPosition[] }
           <div className="space-y-2 border-t pt-3">
             <p className="text-xs font-semibold">Per-loan thresholds</p>
             {loans.map((loan) => (
-              <LoanAlertEditor key={loan.venue.id} loan={loan} />
+              <div key={loan.venue.id} className="space-y-2">
+                <LoanAlertEditor loan={loan} />
+                <RecommendedAlerts loan={loan} emailConfirmed={confirmed} serverPlans={status?.subscriber?.positionPlans} />
+              </div>
             ))}
           </div>
         )}

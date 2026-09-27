@@ -1,7 +1,7 @@
-import type { Venue } from '@/lib/protocol';
+import { availableToBorrowUsd, type Venue } from '@/lib/protocol';
 import { storeJson, storeSetJson } from '@/lib/store';
 
-export type RatePoint = { t: number; borrow: number; supply: number; utilization?: number };
+export type RatePoint = { t: number; borrow: number; supply: number; utilization?: number; liquidity?: number };
 
 export async function snapshotRates(venues: Venue[]) {
   const hour = Math.floor(Date.now() / 3_600_000);
@@ -10,7 +10,7 @@ export async function snapshotRates(venues: Venue[]) {
   for (const venue of venues) {
     const key = `rates:hist:${venue.id}`;
     const points = (await storeJson<RatePoint[]>(key)) ?? [];
-    const next: RatePoint = { t: Math.floor(Date.now() / 1000), borrow: venue.borrowApr, supply: venue.supplyApr };
+    const next: RatePoint = { t: Math.floor(Date.now() / 1000), borrow: venue.borrowApr, supply: venue.supplyApr, liquidity: availableToBorrowUsd(venue) };
     if (venue.utilization !== undefined) next.utilization = venue.utilization;
     points.push(next);
     await storeSetJson(key, points.slice(-24 * 90));

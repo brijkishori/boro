@@ -31,7 +31,12 @@ export async function GET(request: Request) {
   const subscriber = await loadSubscriber(address);
   return Response.json({
     configured: mailConfigured(),
-    subscriber: subscriber ? { email: subscriber.email, confirmed: subscriber.confirmed, rules: subscriber.rules } : null,
+    subscriber: subscriber ? {
+      email: subscriber.email,
+      confirmed: subscriber.confirmed,
+      rules: subscriber.rules,
+      positionPlans: subscriber.positionPlans ?? [],
+    } : null,
   });
 }
 
