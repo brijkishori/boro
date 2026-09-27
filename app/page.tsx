@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
 import { useAccount, useConnect } from 'wagmi';
@@ -16,6 +16,10 @@ import Opportunities from '@/components/Opportunities';
 import { useAllPositions } from '@/components/useAllPositions';
 import MarketGuidance from '@/components/MarketGuidance';
 import QuoteBoard from '@/components/QuoteBoard';
+import BorrowCompare from '@/components/BorrowCompare';
+import DecisionCard from '@/components/DecisionCard';
+import StickyMarketBar from '@/components/StickyMarketBar';
+import BorrowEducation from '@/components/BorrowEducation';
 
 const FeeHistory = dynamic(() => import('@/components/FeeHistory'), { ssr: false });
 const TbtcConvert = dynamic(() => import('@/components/TbtcConvert'), { ssr: false });
@@ -23,11 +27,17 @@ const BtcNetworkPanel = dynamic(() => import('@/components/BtcNetworkPanel'), { 
 const CbBtcConvert = dynamic(() => import('@/components/CbBtcConvert'), { ssr: false });
 const TipJar = dynamic(() => import('@/components/TipJar'), { ssr: false });
 import { useRates } from '@/components/useRates';
-import { formatApr, formatUsd } from '@/lib/amount';
+import { formatUsd } from '@/lib/amount';
 import { NetworkPicker, useNetworkFilter } from '@/components/NetworkFilter';
+import { plannerServerSnapshot, plannerSnapshot, subscribePlanner } from '@/lib/finance/persist';
+import { MARKET_SORTS, sortVenuesByMode, type MarketSort } from '@/lib/finance/sort';
 import { matchesAssetFilter, rankVenues, rateAssets, suggestionFor, type AssetFilter, type Venue, type VenueAction } from '@/lib/protocol';
 
 type Mode = 'borrow' | 'lend' | 'repay';
+
+function scrollToId(id: string) {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
 
 export default function HomePage() {
   return (
@@ -49,8 +59,11 @@ function Dashboard() {
   const [filter, setFilter] = useState<AssetFilter>('all');
   const [selectedOverride, setSelectedOverride] = useState<string | null>(null);
   const [pinned, setPinned] = useState(Boolean(marketParam));
+  const [explorerOpen, setExplorerOpen] = useState(false);
+  const [sortMode, setSortMode] = useState<MarketSort>('best-fit');
   const { network, setNetwork } = useNetworkFilter();
   const started = useRef(false);
+  const planner = useSyncExternalStore(subscribePlanner, plannerSnapshot, plannerServerSnapshot);
   const mode = modeOverride ?? urlMode ?? 'borrow';
   const selectedId = selectedOverride ?? marketParam;
 
@@ -80,17 +93,24 @@ function Dashboard() {
     );
   }, [payload, action, network]);
   const ranked = useMemo(() => allForAction.filter((venue) => matchesAssetFilter(venue, filter)), [allForAction, filter]);
+  const displayed = useMemo(
+    () => sortVenuesByMode(ranked, action, sortMode, { scenario: planner.scenario, benchmark: planner.benchmark }),
+    [ranked, action, sortMode, planner.scenario, planner.benchmark],
+  );
   const ratings = useMemo(() => rateAssets(allForAction, action), [allForAction, action]);
   const suggestion = useMemo(() => suggestionFor(ranked, action), [ranked, action]);
   const best = suggestion.venue;
-  const suggested = mode === 'borrow' && suggestion.pickedForConfidence;
   const pinnedVenue = pinned ? ranked.find((venue) => venue.id === selectedId) ?? null : null;
-  const selected = pinnedVenue ?? best;
+  const selected = mode === 'borrow' ? pinnedVenue : (pinnedVenue ?? best);
+  const inspect = selected ?? best;
+  const topMatches = displayed.slice(0, 3);
   const btcPrice = payload?.btcPriceUsd ?? 0;
   const networkVenues = useMemo(
     () => (payload?.venues ?? []).filter((venue) => network === 'all' || venue.chainId === network),
     [payload, network],
   );
+  const scenario = planner.scenario;
+  const benchmark = planner.benchmark;
 
   function setMode(next: Mode) {
     setModeOverride(next);
@@ -108,105 +128,206 @@ function Dashboard() {
     chooseVenue(venue.id);
   }
 
+  function compareAlternatives() {
+    setExplorerOpen(true);
+    scrollToId('market-explorer');
+  }
+
+  function reviewMarket() {
+    if (!selected) return;
+    setExplorerOpen(true);
+    requestAnimationFrame(() => scrollToId(`market-${selected.id}`));
+  }
+
+  function reviewTransaction() {
+    scrollToId('execution-workflow');
+  }
+
   return (
-    <div className="space-y-4">
+    <div className={`space-y-4 ${selected && mode === 'borrow' ? 'pb-20 md:pb-0' : ''}`}>
       <NetworkPicker onChange={() => setPinned(false)} />
       <PortfolioCard venues={networkVenues} btcPrice={btcPrice} onOpen={openPosition} />
-      <HomeOpportunities venues={networkVenues} address={address} onOpen={openPosition} />
-      <div className="grid grid-cols-2 gap-3">
-        <Card>
-          <CardContent className="p-3">
-            <p className="text-[10px] font-semibold uppercase text-muted-foreground">Bitcoin</p>
-            <p className="text-lg font-bold">{btcPrice > 0 ? formatUsd(btcPrice) : 'Loading...'}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-3">
-            <p className="text-[10px] font-semibold uppercase text-muted-foreground">{mode === 'lend' ? 'Best supply APY' : suggested ? 'Suggested APR' : 'Lowest borrow APR'}</p>
-            <p className="text-lg font-bold">{best ? formatApr(mode === 'lend' ? best.supplyApr : best.borrowApr) : '—'}</p>
-            {suggested && suggestion.anchor && <p className="text-[10px] text-muted-foreground">Cheapest deep pool {formatApr(suggestion.anchor.borrowApr)}</p>}
-          </CardContent>
-        </Card>
-      </div>
+      <HomeOpportunities
+        mode={mode}
+        venues={networkVenues}
+        address={address}
+        onOpen={openPosition}
+        onShowLend={() => setMode('lend')}
+      />
 
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-muted-foreground">
-          {loading ? 'Loading live markets...' : payload ? `Updated ${new Date(payload.fetchedAt).toLocaleTimeString()}` : 'Rates unavailable'}
-        </p>
-        <Button type="button" variant="outline" size="sm" onClick={() => void refresh()}>Refresh</Button>
+        <div>
+          <p className="text-[10px] font-semibold uppercase text-muted-foreground">Bitcoin</p>
+          <p className="text-lg font-bold">{btcPrice > 0 ? formatUsd(btcPrice) : 'Loading...'}</p>
+          <p className="text-[11px] text-muted-foreground">
+            {loading ? 'Loading live markets...' : payload ? `Updated ${new Date(payload.fetchedAt).toLocaleTimeString()}` : 'Rates unavailable'}
+          </p>
+        </div>
+        <Button type="button" variant="outline" className="h-11" onClick={() => void refresh()}>Refresh</Button>
       </div>
       {error && <p className="text-xs font-medium text-red-500">{error}</p>}
       {payload?.warnings.map((warning) => (
         <p key={warning} className="text-xs text-orange-500">{warning}</p>
       ))}
 
-      <MarketGuidance
-        action={action}
-        ratings={ratings}
-        suggestion={suggestion}
-        onPick={(venue) => {
-          if (venue.assetSymbol === 'tBTC' || venue.assetSymbol === 'WBTC' || venue.assetSymbol === 'cbBTC') {
-            setFilter(venue.assetSymbol);
-          }
-          chooseVenue(venue.id);
-        }}
-      />
-      <QuoteBoard
-        action={action}
-        venues={ranked}
-        selectedId={selected?.id ?? null}
-        recommendedId={best?.id ?? null}
-        filter={filter}
-        onFilter={(next) => {
-          setPinned(false);
-          setFilter(next);
-        }}
-        onSelect={chooseVenue}
-      />
+      {mode === 'borrow' && (
+        <>
+          <BorrowCompare venue={inspect} btcPrice={btcPrice} stored={planner} />
+          {scenario && selected && (
+            <DecisionCard
+              venue={selected}
+              scenario={scenario}
+              benchmark={benchmark}
+              btcPrice={btcPrice}
+              onCompare={compareAlternatives}
+              onReviewMarket={reviewMarket}
+              onReviewTransaction={reviewTransaction}
+            />
+          )}
+          <section id="top-markets" className="space-y-2">
+            <h2 className="text-sm font-semibold">Top matching markets</h2>
+            <p className="text-[11px] text-muted-foreground">
+              Suggested is a suitability pick, not the lowest current APR alone. Selected stays separate until you tap a market.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {MARKET_SORTS.map((item) => (
+                <Button
+                  key={item.id}
+                  type="button"
+                  size="sm"
+                  variant={sortMode === item.id ? 'default' : 'outline'}
+                  className={`h-10 ${sortMode === item.id ? 'bg-blue-600 text-white hover:bg-blue-700' : ''}`}
+                  onClick={() => setSortMode(item.id)}
+                >
+                  {item.label}
+                </Button>
+              ))}
+            </div>
+            <QuoteBoard
+              action={action}
+              venues={topMatches}
+              peers={ranked}
+              selectedId={selected?.id ?? null}
+              recommendedId={best?.id ?? null}
+              onSelect={chooseVenue}
+              scenario={scenario}
+              benchmark={benchmark}
+              btcPrice={btcPrice}
+              showFilters={false}
+              prefetchHistory
+            />
+          </section>
+          <details id="market-explorer" className="rounded-xl border bg-card px-4 py-3" open={explorerOpen} onToggle={(event) => setExplorerOpen(event.currentTarget.open)}>
+            <summary className="cursor-pointer text-sm font-semibold">All markets</summary>
+            <div className="mt-3 space-y-3">
+              <MarketGuidance
+                action={action}
+                ratings={ratings}
+                suggestion={suggestion}
+                onPick={(venue) => {
+                  if (venue.assetSymbol === 'tBTC' || venue.assetSymbol === 'WBTC' || venue.assetSymbol === 'cbBTC') {
+                    setFilter(venue.assetSymbol);
+                  }
+                  chooseVenue(venue.id);
+                }}
+              />
+              <QuoteBoard
+                action={action}
+                venues={displayed}
+                selectedId={selected?.id ?? null}
+                recommendedId={best?.id ?? null}
+                filter={filter}
+                onFilter={(next) => {
+                  setPinned(false);
+                  setFilter(next);
+                }}
+                onSelect={chooseVenue}
+                scenario={scenario}
+                benchmark={benchmark}
+                btcPrice={btcPrice}
+                cardAnchor
+              />
+            </div>
+          </details>
+        </>
+      )}
+
+      {mode !== 'borrow' && (
+        <>
+          <MarketGuidance
+            action={action}
+            ratings={ratings}
+            suggestion={suggestion}
+            onPick={(venue) => {
+              if (venue.assetSymbol === 'tBTC' || venue.assetSymbol === 'WBTC' || venue.assetSymbol === 'cbBTC') {
+                setFilter(venue.assetSymbol);
+              }
+              chooseVenue(venue.id);
+            }}
+          />
+          <QuoteBoard
+            action={action}
+            venues={ranked}
+            selectedId={selected?.id ?? null}
+            recommendedId={best?.id ?? null}
+            filter={filter}
+            onFilter={(next) => {
+              setPinned(false);
+              setFilter(next);
+            }}
+            onSelect={chooseVenue}
+            btcPrice={btcPrice}
+            cardAnchor
+          />
+        </>
+      )}
 
       <Tabs value={mode} onValueChange={(value) => setMode(value as Mode)}>
-        <TabsList className="mb-4 grid h-12 w-full grid-cols-3">
+        <TabsList className="mb-2 grid h-12 w-full grid-cols-3">
           <TabsTrigger value="borrow" className="text-sm font-bold">Borrow</TabsTrigger>
           <TabsTrigger value="lend" className="text-sm font-bold">Lend</TabsTrigger>
           <TabsTrigger value="repay" className="text-sm font-bold">Repay</TabsTrigger>
         </TabsList>
       </Tabs>
 
-      {mode === 'borrow' && <BorrowFlow key={selected?.id ?? 'borrow'} quote={selected} fetchedAt={payload?.fetchedAt ?? 0} venues={ranked} onSelect={chooseVenue} />}
-      {mode === 'lend' && <LendFlow key={selected?.id ?? 'lend'} quote={selected} fetchedAt={payload?.fetchedAt ?? 0} venues={ranked} onSelect={chooseVenue} />}
-      {mode === 'repay' && <RepayFlow key={selected?.id ?? 'repay'} quote={selected} venues={ranked} onSelect={chooseVenue} />}
-
-      <FeeHistory />
-
-      <TbtcConvert btcPriceUsd={btcPrice} />
+      <section id="execution-workflow">
+        {mode === 'borrow' && !selected && (
+          <Card>
+            <CardContent className="space-y-3 p-4">
+              <p className="text-sm font-semibold">Select a market to continue</p>
+              <p className="text-xs text-muted-foreground">
+                Choose a market above to set the protocol, chain, and assets. A saved planning scenario stays separate until you load it.
+              </p>
+              <Button type="button" className="h-11" onClick={() => scrollToId('top-markets')}>Compare markets</Button>
+            </CardContent>
+          </Card>
+        )}
+        {mode === 'borrow' && selected && (
+          <BorrowFlow
+            key={selected.id}
+            quote={selected}
+            fetchedAt={payload?.fetchedAt ?? 0}
+            venues={ranked}
+            onSelect={chooseVenue}
+            initialCollateral={scenario?.collateralAmount}
+            initialBorrowUsd={scenario?.borrowAmount}
+          />
+        )}
+        {mode === 'lend' && <LendFlow key={selected?.id ?? 'lend'} quote={selected} fetchedAt={payload?.fetchedAt ?? 0} venues={ranked} onSelect={chooseVenue} />}
+        {mode === 'repay' && <RepayFlow key={selected?.id ?? 'repay'} quote={selected} venues={ranked} onSelect={chooseVenue} />}
+      </section>
 
       <details className="rounded-xl border bg-card px-4 py-3">
-        <summary className="cursor-pointer text-sm font-semibold">Bitcoin balance and cbBTC conversion</summary>
+        <summary className="cursor-pointer text-sm font-semibold">Convert Bitcoin and fee history</summary>
         <div className="mt-3 space-y-3">
+          <FeeHistory />
+          <TbtcConvert btcPriceUsd={btcPrice} />
           <BtcNetworkPanel btcPriceUsd={btcPrice} />
           <CbBtcConvert />
         </div>
       </details>
 
-      <section id="how-it-works" className="mt-8 border-t border-muted pt-8">
-        <h2 className="mb-4 text-center text-lg font-bold">How to use Simple<span className="text-blue-500">BTC</span></h2>
-        <div className="grid gap-3">
-          {[
-            ['Read Bitcoin, or connect an EVM wallet', 'The Bitcoin panel reads a mainnet balance. Lending and borrowing execute from your Ethereum or Base wallet.'],
-            ['Compare Morpho and Aave', 'Borrow mode suggests a deep, established pool when its APR is within 0.25% of the cheapest. Lend mode highlights the highest BTC supply APY. Direct BTC markets use tBTC.'],
-            ['Supply, then borrow inside the safety buffer', 'Transactions use the on-chain oracle or Aave account data. Borrowing is capped at 90% of the protocol maximum.'],
-            ['Repay, then withdraw', 'Repay the selected market, including interest, before collateral can be withdrawn.'],
-          ].map(([title, body], index) => (
-            <div key={title} className="flex items-start gap-3 rounded-xl border bg-card p-3 shadow-sm">
-              <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-600 dark:bg-blue-500/20 dark:text-blue-400">{index + 1}</div>
-              <div>
-                <h3 className="text-sm font-semibold">{title}</h3>
-                <p className="mt-0.5 text-xs text-muted-foreground">{body}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
+      <BorrowEducation />
 
       <footer className="mt-8 flex flex-col items-center space-y-4 border-t border-muted pb-4 pt-6">
         <TipJar />
@@ -215,17 +336,35 @@ function Dashboard() {
           © {new Date().getFullYear()} Simple<span className="text-blue-500">BTC</span> Borrow.
         </p>
       </footer>
+
+      {mode === 'borrow' && selected && (
+        <StickyMarketBar venue={selected} scenario={scenario} btcPrice={btcPrice} onReview={reviewTransaction} />
+      )}
     </div>
   );
 }
 
-function HomeOpportunities({ venues, address, onOpen }: { venues: Venue[]; address?: Address; onOpen: (venue: Venue, mode: Mode) => void }) {
+function HomeOpportunities({
+  mode,
+  venues,
+  address,
+  onOpen,
+  onShowLend,
+}: {
+  mode: Mode;
+  venues: Venue[];
+  address?: Address;
+  onOpen: (venue: Venue, mode: Mode) => void;
+  onShowLend: () => void;
+}) {
   const { positions } = useAllPositions(venues, address);
   return (
     <Opportunities
+      compact={mode === 'borrow'}
       positions={positions.filter((item) => item.venue.action === 'borrow')}
       venues={venues}
       onRefinance={(hint) => onOpen(hint.to, 'borrow')}
+      onShowLend={onShowLend}
     />
   );
 }

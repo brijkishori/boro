@@ -1,10 +1,11 @@
 import { encodeAbiParameters, getAddress, isAddress, keccak256, type Address, type Hex } from 'viem';
+import type { BorrowRate } from '@/lib/finance/rates';
+import type { RateHistoryMetrics } from '@/lib/finance/history';
 
 export const MORPHO_BLUE = getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb');
 export const MIN_LIQUIDITY_USD = 25_000;
 export const RECOMMENDED_LIQUIDITY_USD = 100_000;
 export const DEEP_LIQUIDITY_USD = 10_000_000;
-const CLOSE_APR_GAP = 0.0025;
 const COINBASE_MORPHO_MARKET = '0x9103c3b4e834476c9a62ea009ba2c884ee42e94e6e314a26f04d312434191836';
 export const MAX_APR = 1;
 export const MIN_BTC_PRICE_USD = 1_000;
@@ -95,6 +96,37 @@ export type AaveMarket = {
   variableDebtToken: Address;
 };
 
+export type CollateralRiskParameters = {
+  maxLtv?: number;
+  liquidationThreshold?: number;
+  liquidationLtv?: number;
+  liquidationPenalty?: number;
+  liquidationBonus?: number;
+  /** Live on-chain/current configuration. Proposed governance values must not be used for risk. */
+  parameterSource?: 'live' | 'proposed';
+  eMode?: {
+    available: boolean;
+    category?: string;
+    maxLtv?: number;
+    liquidationThreshold?: number;
+    liquidationBonus?: number;
+  };
+};
+
+export type MarketLiquidity = {
+  availableToBorrow?: number;
+  totalSupplied?: number;
+  totalBorrowed?: number;
+  utilization?: number;
+  targetUtilization?: number;
+};
+
+export type MarketFreshness = {
+  source: string;
+  fetchedAt: number;
+  blockNumber?: number;
+};
+
 export type CompoundMarket = {
   comet: Address;
   minBorrow: string;
@@ -129,11 +161,19 @@ export type Venue = {
   supplyApr: number;
   /** USDC supply APY on the same market, when the venue is a BTC/USDC borrow pool. */
   loanSupplyApr?: number;
+  borrowRate?: BorrowRate;
+  supplyRate?: BorrowRate;
   maxLtv: number;
   liquidityUsd: number;
+  liquidity?: MarketLiquidity;
+  collateralRisk?: CollateralRiskParameters;
+  proposedCollateralRisk?: CollateralRiskParameters;
+  rateHistory?: RateHistoryMetrics;
+  freshness?: MarketFreshness;
   priceUsd: number;
   utilization?: number;
   rewardApr?: number;
+  rewardTokens?: string[];
   morpho?: MorphoMarket;
   aave?: AaveMarket;
   compound?: CompoundMarket;
@@ -186,6 +226,44 @@ export function assetRouteLabel(kind: AssetKind): string {
   if (kind === 'direct') return 'Native BTC via tBTC';
   if (kind === 'wrapped') return 'WBTC';
   return 'cbBTC, Coinbase custody';
+}
+
+export function wrapperCategories(kind: AssetKind): { simplicity: string; custody: string; depth: string } {
+  if (kind === 'direct') {
+    return {
+      simplicity: 'Extra mint/reveal steps',
+      custody: 'Decentralized threshold custody',
+      depth: 'Direct BTC markets vary by pool',
+    };
+  }
+  if (kind === 'wrapped') {
+    return {
+      simplicity: 'Standard ERC-20 wrapper',
+      custody: 'Custodial wrapped BTC',
+      depth: 'Often deep on Ethereum',
+    };
+  }
+  return {
+    simplicity: 'Operational simplicity',
+    custody: 'Centralized Coinbase custody',
+    depth: 'Often deep on Base and Ethereum',
+  };
+}
+
+export function shortMarketId(id: string): string {
+  if (id.length < 14) return id;
+  return `${id.slice(0, 8)}…${id.slice(-4)}`;
+}
+
+export function availableToBorrowUsd(venue: Venue): number {
+  return venue.liquidity?.availableToBorrow ?? venue.liquidityUsd;
+}
+
+export function collateralLimitLabel(venue: Venue): { label: string; value: number } {
+  if (venue.protocol === 'morpho') {
+    return { label: 'LLTV', value: venue.collateralRisk?.liquidationLtv ?? venue.maxLtv };
+  }
+  return { label: 'Max LTV', value: venue.collateralRisk?.maxLtv ?? venue.maxLtv };
 }
 
 export type ConfidenceLevel = 'high' | 'standard' | 'cautious';
@@ -429,6 +507,8 @@ export type Suggestion = {
   thresholdUsd: number;
   gap: number;
   pickedForConfidence: boolean;
+  reasons: string[];
+  cautions: string[];
 };
 
 export type AssetRating = {
@@ -445,18 +525,56 @@ function poolThreshold(pool: Venue[]): number {
   return MIN_LIQUIDITY_USD;
 }
 
+function borrowSuitability(venue: Venue, pool: Venue[]): number {
+  const rates = pool.map((item) => item.borrowApr);
+  const min = Math.min(...rates);
+  const max = Math.max(...rates);
+  const cost = max === min ? 70 : ((max - venue.borrowApr) / (max - min)) * 100;
+  const available = availableToBorrowUsd(venue);
+  const liquidity = available >= DEEP_LIQUIDITY_USD ? 90 : available >= RECOMMENDED_LIQUIDITY_USD ? 65 : 30;
+  const utilization = venue.liquidity?.utilization ?? venue.utilization;
+  const utilizationPenalty = utilization !== undefined && utilization > 0.9 ? 20 : utilization !== undefined && utilization > 0.75 ? 8 : 0;
+  const operational = confidenceRank(venue) * 18;
+  const isolated = venue.protocol === 'morpho' ? 8 : 0;
+  const history = venue.rateHistory ? 8 : 0;
+  const chainCost = venue.chainId === 8453 ? 6 : 2;
+  return cost * 0.32 + liquidity * 0.24 + operational + isolated + history + chainCost - utilizationPenalty;
+}
+
+function suggestionNotes(venue: Venue): { reasons: string[]; cautions: string[] } {
+  const reasons: string[] = [];
+  const cautions: string[] = [];
+  const confidence = venueConfidence(venue);
+  const available = availableToBorrowUsd(venue);
+  if (available >= DEEP_LIQUIDITY_USD) reasons.push('Deep available liquidity');
+  if (confidence.level === 'high') reasons.push(confidence.label);
+  if (venue.protocol === 'morpho') reasons.push('Isolated market: a loss stays in this market');
+  if (venue.chainId === 8453) reasons.push('Lower typical transaction costs on Base');
+  const limit = collateralLimitLabel(venue);
+  if (limit.value > 0 && limit.value <= 0.86) reasons.push(`Conservative ${limit.label} for this market`);
+  if (venue.rateHistory?.avg30d !== undefined) reasons.push('Enough history to compare a 30-day average');
+  if (reasons.length === 0) reasons.push(confidence.detail);
+  if (available < RECOMMENDED_LIQUIDITY_USD) cautions.push('Available liquidity is thinner than larger pools');
+  if (!venue.rateHistory) cautions.push('Not enough history to judge rate stability');
+  if (confidence.level === 'cautious') cautions.push(confidence.detail);
+  return { reasons, cautions };
+}
+
 export function suggestionFor(venues: Venue[], action: VenueAction): Suggestion {
   const ranked = rankVenues(venues, action);
   const pool = comparableVenues(ranked);
   const anchor = pool[0] ?? null;
   const venue = recommendVenue(venues, action);
   const gap = venue && anchor ? Math.max(0, (action === 'lend' ? anchor.supplyApr - venue.supplyApr : venue.borrowApr - anchor.borrowApr)) : 0;
+  const notes = venue ? suggestionNotes(venue) : { reasons: [], cautions: [] };
   return {
     venue,
     anchor,
     thresholdUsd: poolThreshold(pool),
     gap,
     pickedForConfidence: Boolean(venue && anchor && venue.id !== anchor.id),
+    reasons: notes.reasons,
+    cautions: notes.cautions,
   };
 }
 
@@ -479,15 +597,76 @@ export function rateAssets(venues: Venue[], action: VenueAction): AssetRating[] 
 export function recommendVenue(venues: Venue[], action: VenueAction): Venue | null {
   const ranked = rankVenues(venues, action);
   const pool = comparableVenues(ranked);
-  const cheapest = pool[0];
-  if (!cheapest || action === 'lend') return cheapest ?? null;
-  const close = pool.filter((venue) => venue.borrowApr <= cheapest.borrowApr + CLOSE_APR_GAP);
-  close.sort((left, right) => confidenceRank(right) - confidenceRank(left) || right.liquidityUsd - left.liquidityUsd);
-  return close[0] ?? cheapest;
+  if (action === 'lend') return pool[0] ?? null;
+  if (pool.length === 0) return null;
+  return pool.slice().sort((left, right) => borrowSuitability(right, pool) - borrowSuitability(left, pool) || left.borrowApr - right.borrowApr)[0] ?? null;
+}
+
+export function protocolMarketId(venue: Venue): string {
+  if (venue.morpho?.marketId) return venue.morpho.marketId.toLowerCase();
+  if (venue.protocol === 'compound') {
+    const comet = venue.compound?.comet && isAddress(venue.compound.comet)
+      ? venue.compound.comet
+      : COMETS[venue.chainId];
+    return comet && isAddress(comet) ? getAddress(comet) : `compound:${venue.chainId}`;
+  }
+  if (venue.protocol === 'aave' || venue.protocol === 'spark') {
+    const known = venue.protocol === 'spark' ? SPARK_POOL : AAVE_POOLS[venue.chainId];
+    const pool = venue.aave?.pool && isAddress(venue.aave.pool) ? venue.aave.pool : known;
+    return pool && isAddress(pool) ? getAddress(pool) : `${venue.protocol}:${venue.chainId}`;
+  }
+  if (venue.moonwell?.mCollateral && isAddress(venue.moonwell.mCollateral)) return getAddress(venue.moonwell.mCollateral);
+  return `${venue.protocol}:${venue.chainId}`;
+}
+
+function checksummed(value: string): string {
+  return isAddress(value) ? getAddress(value) : value.toLowerCase();
+}
+
+/** Stable identity: protocol + chain + collateral + debt + protocol market id. Not the display name. */
+export function canonicalMarketKey(venue: Venue): string {
+  return [
+    venue.action,
+    venue.protocol,
+    venue.chainId,
+    checksummed(venue.assetAddress),
+    checksummed(venue.loanAddress),
+    protocolMarketId(venue),
+  ].join(':').toLowerCase();
+}
+
+function hasProtocolId(venue: Venue): boolean {
+  return Boolean(venue.morpho || venue.compound || venue.aave || venue.moonwell);
+}
+
+function preferDuplicate(left: Venue, right: Venue, action: VenueAction): Venue {
+  if (hasProtocolId(left) !== hasProtocolId(right)) return hasProtocolId(left) ? left : right;
+  const liquidityDelta = availableToBorrowUsd(left) - availableToBorrowUsd(right);
+  if (liquidityDelta !== 0) return liquidityDelta > 0 ? left : right;
+  if (Boolean(left.rateHistory) !== Boolean(right.rateHistory)) return left.rateHistory ? left : right;
+  if (left.borrowApr !== right.borrowApr || left.supplyApr !== right.supplyApr) {
+    return action === 'lend'
+      ? (left.supplyApr >= right.supplyApr ? left : right)
+      : (left.borrowApr <= right.borrowApr ? left : right);
+  }
+  return left.id <= right.id ? left : right;
+}
+
+export function dedupeVenues(venues: Venue[], action?: VenueAction): Venue[] {
+  const chosen = new Map<string, Venue>();
+  for (const venue of venues) {
+    const key = canonicalMarketKey(venue);
+    const current = chosen.get(key);
+    chosen.set(key, current ? preferDuplicate(current, venue, action ?? venue.action) : venue);
+  }
+  return [...chosen.values()];
 }
 
 export function rankVenues(venues: Venue[], action: VenueAction): Venue[] {
-  const ranked = venues.filter((venue) => venue.action === action && isVenueSafe(venue));
+  const ranked = dedupeVenues(
+    venues.filter((venue) => venue.action === action && isVenueSafe(venue)),
+    action,
+  );
   ranked.sort((left, right) => {
     const rateDelta = action === 'lend' ? right.supplyApr - left.supplyApr : left.borrowApr - right.borrowApr;
     if (rateDelta !== 0) return rateDelta;

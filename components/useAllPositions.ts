@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+/* eslint-disable react-hooks/refs -- venue-call identity is held stable across list churn */
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useReadContracts } from 'wagmi';
 import type { Address } from 'viem';
 import { adapterFor, type PositionSnapshot } from '@/lib/adapters';
+import { emptyPosition } from '@/lib/adapters/position';
+import { overlayCachedPosition, positionCacheVersion, readFreshPosition, subscribeFreshPosition } from '@/lib/finance/positionCache';
 import type { Venue } from '@/lib/protocol';
 
 export type OpenPosition = {
@@ -72,6 +75,8 @@ export function useAllPositions(venues: Venue[], address: Address | undefined) {
     return stableUnique.flatMap((venue) => adapterFor(venue).positionReads(venue, stableAddress));
   }, [stableAddress, stableUnique]);
 
+  const cacheEpoch = useSyncExternalStore(subscribeFreshPosition, positionCacheVersion, () => 0);
+  const refreshedEpoch = useRef(0);
   const { data, isLoading, isFetching, refetch } = useReadContracts({
     contracts: calls.map((call) => ({
       address: call.address,
@@ -87,34 +92,51 @@ export function useAllPositions(venues: Venue[], address: Address | undefined) {
       retry: 2,
     },
   });
+  useEffect(() => {
+    if (!stableAddress || cacheEpoch === 0 || refreshedEpoch.current === cacheEpoch) return;
+    refreshedEpoch.current = cacheEpoch;
+    void refetch();
+  }, [cacheEpoch, refetch, stableAddress]);
 
   const parsed = useMemo(() => {
     const cacheKey = stableAddress?.toLowerCase();
     const previous = cacheKey ? lastByAddress.get(cacheKey) ?? [] : [];
-    if (!data || !stableAddress) return { positions: previous, complete: false };
+    if (!stableAddress) return { positions: previous, complete: false };
 
     const open: OpenPosition[] = [];
     let index = 0;
-    let complete = true;
+    let complete = Boolean(data);
     for (const venue of stableUnique) {
       const reads = adapterFor(venue).positionReads(venue, stableAddress);
-      const slice = data.slice(index, index + reads.length);
+      const slice = data?.slice(index, index + reads.length) ?? [];
       index += reads.length;
-      if (slice.length !== reads.length || slice.some((row) => row.status !== 'success')) {
+      const kept = previous.find((item) => venueKey(item.venue) === venueKey(venue));
+      if (!data || slice.length !== reads.length || slice.some((row) => row.status !== 'success')) {
         complete = false;
-        const kept = previous.find((item) => venueKey(item.venue) === venueKey(venue));
-        if (kept && isOpenPosition(venue, kept.snapshot)) open.push({ ...kept, venue });
+        const snapshot = overlayCachedPosition(venue, heldAddress, kept?.snapshot ?? emptyPosition());
+        if (isOpenPosition(venue, snapshot)) open.push({ venue, snapshot });
         continue;
       }
-      const snapshot = adapterFor(venue).parsePosition(venue, slice.map((row) => row.result));
+      const snapshot = overlayCachedPosition(
+        venue,
+        heldAddress,
+        adapterFor(venue).parsePosition(venue, slice.map((row) => row.result)),
+      );
       if (isOpenPosition(venue, snapshot)) open.push({ venue, snapshot });
     }
-    if (index !== data.length) complete = false;
+    if (data && index !== data.length) complete = false;
+    if (!data || cacheEpoch > 0) {
+      for (const venue of unique) {
+        if (open.some((item) => venueKey(item.venue) === venueKey(venue))) continue;
+        const cached = readFreshPosition(venue, heldAddress);
+        if (cached && isOpenPosition(venue, cached.snapshot)) open.push({ venue, snapshot: cached.snapshot });
+      }
+    }
 
     if (complete && cacheKey) lastByAddress.set(cacheKey, open);
     if (!complete && open.length === 0 && previous.length > 0) return { positions: previous, complete: false };
     return { positions: open.length > 0 || complete ? open : previous, complete };
-  }, [data, stableAddress, stableUnique]);
+  }, [cacheEpoch, data, heldAddress, unique, stableAddress, stableUnique]);
 
   return { positions: parsed.positions, isLoading: isLoading && parsed.positions.length === 0, isFetching, refetch };
 }

@@ -5,11 +5,13 @@ import { formatUnits } from 'viem';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { formatToken, formatUsdExact, parseAmount, tokenAmountUsd, tokenPriceUsd, usdToToken } from '@/lib/amount';
+import { amountFieldLabel } from '@/lib/finance/labels';
 
 type Unit = 'token' | 'usd';
 
 export default function UsdAmountField({
   label,
+  kind,
   symbol,
   decimals,
   priceUsd,
@@ -19,6 +21,9 @@ export default function UsdAmountField({
   epoch = 0,
   defaultUnit = 'usd',
   pinned,
+  seed,
+  seedKey = 0,
+  delta = false,
   invalid = false,
   disabled = false,
   onAmount,
@@ -26,7 +31,8 @@ export default function UsdAmountField({
   onPercent,
   percentLabel,
 }: {
-  label: string;
+  label?: string;
+  kind?: 'collateral' | 'borrow';
   symbol: string;
   decimals: number;
   priceUsd: number;
@@ -36,6 +42,10 @@ export default function UsdAmountField({
   epoch?: number;
   defaultUnit?: Unit;
   pinned?: bigint;
+  /** Applied once when seedKey changes. Does not follow later price ticks. */
+  seed?: bigint | null;
+  seedKey?: number;
+  delta?: boolean;
   invalid?: boolean;
   disabled?: boolean;
   onAmount: (amount: bigint | null) => void;
@@ -71,6 +81,22 @@ export default function UsdAmountField({
     setText(unit === 'usd' && usd !== null ? usd.toFixed(2) : formatUnits(pinned, decimals));
     onAmount(pinned);
   }, [pinned, unit, decimals, price, onAmount]);
+
+  useEffect(() => {
+    if (!seedKey) return;
+    if (seed === undefined || seed === null || seed <= 0n) {
+      exact.current = null;
+      setText('');
+      onAmount(null);
+      return;
+    }
+    exact.current = seed;
+    const usd = tokenAmountUsd(seed, decimals, price);
+    setText(unit === 'usd' && usd !== null ? usd.toFixed(2) : formatUnits(seed, decimals));
+    onAmount(seed);
+    // seedKey is the explicit load. Price and onAmount must not refill the field afterward.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedKey]);
 
   function resolvedAmount() {
     if (exact.current !== null) return exact.current;
@@ -133,7 +159,7 @@ export default function UsdAmountField({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-semibold">{label}</span>
+        <span className="text-sm font-semibold">{kind ? amountFieldLabel(kind, unit, symbol, delta) : label}</span>
         <div className="grid grid-cols-2 gap-0.5 rounded-md bg-muted p-0.5">
           <button type="button" className={`h-7 rounded px-2 text-[11px] font-bold ${unit === 'token' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`} onClick={() => chooseUnit('token')}>{symbol}</button>
           <button type="button" className={`h-7 rounded px-2 text-[11px] font-bold ${unit === 'usd' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`} disabled={price <= 0} onClick={() => chooseUnit('usd')}>USD</button>

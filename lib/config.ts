@@ -90,25 +90,33 @@ function buildConnectors(): CreateConnectorFn[] {
   attemptConnector('WalletConnect', () => walletConnect({
     projectId,
     showQrModal: false,
+    // Keep WalletConnect off the Next.js issues overlay; pairing still works.
+    logger: 'silent',
     metadata: {
       name: 'Simple BTC Borrow',
       description: 'Borrow and lend BTC on Morpho and Aave',
       url: 'https://boro-ruddy.vercel.app',
       icons: ['https://boro-ruddy.vercel.app/icon.png'],
     },
-  }), connectors);
+  } as Parameters<typeof walletConnect>[0]), connectors);
   return connectors;
 }
 
-const connectors = buildConnectors();
+type AppConfig = ReturnType<typeof createConfig>;
 
-export const config = createConfig({
-  chains: [base, mainnet],
-  connectors,
-  transports: {
-    [base.id]: chainTransport(8453),
-    [mainnet.id]: chainTransport(1),
-  },
-  multiInjectedProviderDiscovery: false,
-  ssr: true,
-});
+function createAppConfig(): AppConfig {
+  return createConfig({
+    chains: [base, mainnet],
+    connectors: buildConnectors(),
+    transports: {
+      [base.id]: chainTransport(8453),
+      [mainnet.id]: chainTransport(1),
+    },
+    multiInjectedProviderDiscovery: false,
+    ssr: true,
+  });
+}
+
+const hotGlobal = globalThis as typeof globalThis & { __boroWagmiConfig?: AppConfig };
+
+export const config = hotGlobal.__boroWagmiConfig ?? (hotGlobal.__boroWagmiConfig = createAppConfig());

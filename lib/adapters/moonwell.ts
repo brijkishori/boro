@@ -1,7 +1,7 @@
 import { formatUnits, maxUint256 } from 'viem';
 import { moonwellComptrollerAbi, moonwellTokenAbi } from '@/lib/abi';
 import { applySafetyBuffer } from '@/lib/risk';
-import { asBigint, emptyPosition, healthFromUsd, liquidationFromTokens, ltvFromUsd } from './position';
+import { asBigint, emptyPosition, fieldAt, healthFromUsd, liquidationFromTokens, ltvFromUsd } from './position';
 import type { ProtocolAdapter } from './types';
 
 export const moonwellAdapter: ProtocolAdapter = {
@@ -16,16 +16,18 @@ export const moonwellAdapter: ProtocolAdapter = {
       { address: market.comptroller, abi: moonwellComptrollerAbi, functionName: 'checkMembership', args: [user, market.mCollateral], chainId: venue.chainId },
     ];
   },
+  authoritativeReads(venue, user) {
+    return { core: moonwellAdapter.positionReads(venue, user), enrichment: [] };
+  },
   parsePosition(venue, results) {
     if (!venue.moonwell) return emptyPosition();
     const mTokens = asBigint(results[0]);
     const exchangeRate = asBigint(results[1]);
     const debt = asBigint(results[2]);
-    const liquidity = results[3] as readonly [bigint, bigint, bigint] | undefined;
     const entered = results[4] === true;
     const collateral = exchangeRate > 0n ? (mTokens * exchangeRate) / 10n ** 18n : 0n;
-    const liquidityUsd = Number(formatUnits(liquidity?.[1] ?? 0n, 18));
-    const shortfallUsd = Number(formatUnits(liquidity?.[2] ?? 0n, 18));
+    const liquidityUsd = Number(formatUnits(fieldAt(results[3], 1, 'liquidity'), 18));
+    const shortfallUsd = Number(formatUnits(fieldAt(results[3], 2, 'shortfall'), 18));
     const collateralUsd = Number(formatUnits(collateral, venue.assetDecimals)) * venue.priceUsd;
     const debtUsd = Number(formatUnits(debt, venue.loanDecimals));
     const borrowRoomUsd = Math.max(0, liquidityUsd) * 0.9;

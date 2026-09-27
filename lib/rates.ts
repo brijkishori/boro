@@ -1,11 +1,12 @@
 import { getAddress, isAddress, type Address, type Hex } from 'viem';
 import { fetchCompoundVenues, fetchMoonwellVenues, fetchSparkVenues } from '@/lib/adapters/fetchVenues';
+import { normalizeBorrowRate } from '@/lib/finance/rates';
 import {
   AAVE_POOLS,
   CHAINS,
   MIN_LIQUIDITY_USD,
+  dedupeVenues,
   type AaveMarket,
-  type ChainId,
   type RatesPayload,
   type Venue,
   findBtcToken,
@@ -18,6 +19,9 @@ const MORPHO_URL = 'https://api.morpho.org/graphql';
 const AAVE_URL = 'https://api.v3.aave.com/graphql';
 const FRESH_MS = 15_000;
 const STALE_MS = 5 * 60_000;
+const GRAPHQL_MS = 8_000;
+const EXTRAS_MS = 8_000;
+const LOAD_MS = 18_000;
 
 type CacheEntry = { at: number; payload: RatesPayload };
 
@@ -34,12 +38,53 @@ const morphoQuery = `query Markets($where: MarketFilters) {
       oracle { address }
       loanAsset { symbol address decimals }
       collateralAsset { symbol address decimals }
+      state { borrowApy supplyApy liquidityAssetsUsd borrowAssetsUsd supplyAssetsUsd utilization }
+    }
+  }
+}`;
+
+const morphoQueryBasic = `query Markets($where: MarketFilters) {
+  markets(first: 100, orderBy: SupplyAssetsUsd, orderDirection: Desc, where: $where) {
+    items {
+      marketId
+      lltv
+      irmAddress
+      chain { id }
+      oracle { address }
+      loanAsset { symbol address decimals }
+      collateralAsset { symbol address decimals }
       state { borrowApy supplyApy liquidityAssetsUsd }
     }
   }
 }`;
 
+async function fetchMorphoMarkets(where: unknown): Promise<unknown> {
+  try {
+    return await graphql(MORPHO_URL, morphoQuery, { where });
+  } catch {
+    return graphql(MORPHO_URL, morphoQueryBasic, { where });
+  }
+}
+
 const aaveQuery = `query Markets($request: MarketsRequest!) {
+  markets(request: $request) {
+    name
+    address
+    chain { chainId }
+    reserves {
+      underlyingToken { symbol address decimals }
+      usdExchangeRate
+      isFrozen
+      isPaused
+      aToken { address }
+      vToken { address }
+      supplyInfo { apy { value } maxLTV { value } liquidationThreshold { value } liquidationBonus { value } canBeCollateral total { value } }
+      borrowInfo { apy { value } availableLiquidity { amount { value } } }
+    }
+  }
+}`;
+
+const aaveQueryBasic = `query Markets($request: MarketsRequest!) {
   markets(request: $request) {
     name
     address
@@ -57,6 +102,34 @@ const aaveQuery = `query Markets($request: MarketsRequest!) {
   }
 }`;
 
+async function graphql(url: string, query: string, variables: unknown): Promise<unknown> {
+  const body = await postJson(url, { query, variables }) as { errors?: unknown };
+  if (body && typeof body === 'object' && Array.isArray(body.errors) && body.errors.length > 0) {
+    throw new Error('graphql fields unavailable');
+  }
+  return body;
+}
+
+async function fetchAaveMarkets(): Promise<unknown> {
+  const request = { request: { chainIds: [1, 8453] } };
+  try {
+    return await graphql(AAVE_URL, aaveQuery, request);
+  } catch {
+    return graphql(AAVE_URL, aaveQueryBasic, request);
+  }
+}
+
+function sourceRates(kind: 'APR' | 'APY', borrow: number | null, supply: number | null) {
+  const borrowRate = borrow === null ? null : normalizeBorrowRate(kind, borrow);
+  const supplyRate = supply === null ? null : normalizeBorrowRate(kind, supply);
+  return {
+    borrowApr: borrowRate?.apr ?? 0,
+    supplyApr: supplyRate?.apr ?? 0,
+    borrowRate: borrowRate ?? undefined,
+    supplyRate: supplyRate ?? undefined,
+  };
+}
+
 function asNumber(value: unknown): number | null {
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
   return Number.isFinite(number) ? number : null;
@@ -73,12 +146,22 @@ function median(values: number[]): number {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
+function withTimeout<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(label)), ms);
+  });
+  return Promise.race([work, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 async function postJson(url: string, body: unknown): Promise<unknown> {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(12_000),
+    signal: AbortSignal.timeout(GRAPHQL_MS),
     cache: 'no-store',
   });
   if (!response.ok) throw new Error(`upstream ${response.status}`);
@@ -106,7 +189,7 @@ function readMorphoVenues(payload: unknown, action: 'borrow' | 'lend'): Venue[] 
       oracle?: { address?: unknown };
       loanAsset?: { symbol?: unknown; address?: unknown; decimals?: unknown };
       collateralAsset?: { symbol?: unknown; address?: unknown; decimals?: unknown };
-      state?: { borrowApy?: unknown; supplyApy?: unknown; liquidityAssetsUsd?: unknown };
+      state?: { borrowApy?: unknown; supplyApy?: unknown; liquidityAssetsUsd?: unknown; borrowAssetsUsd?: unknown; supplyAssetsUsd?: unknown; utilization?: unknown };
     };
     const chainId = asNumber(row.chain?.id);
     if (!chainId || !isChainId(chainId)) continue;
@@ -116,11 +199,15 @@ function readMorphoVenues(payload: unknown, action: 'borrow' | 'lend'): Venue[] 
     const irm = asAddress(row.irmAddress);
     const marketId = typeof row.marketId === 'string' ? row.marketId : '';
     const lltv = typeof row.lltv === 'string' ? row.lltv : '';
-    const borrowApr = asNumber(row.state?.borrowApy);
-    const supplyApr = asNumber(row.state?.supplyApy);
+    const borrowApy = asNumber(row.state?.borrowApy);
+    const supplyApy = asNumber(row.state?.supplyApy);
+    const rates = sourceRates('APY', borrowApy, supplyApy);
     const liquidityUsd = asNumber(row.state?.liquidityAssetsUsd);
-    if (!loan || !collateral || !oracle || !irm || borrowApr === null || supplyApr === null || liquidityUsd === null) continue;
-    if (liquidityUsd < MIN_LIQUIDITY_USD || borrowApr < 0 || borrowApr >= 1 || supplyApr < 0 || supplyApr >= 1) continue;
+    const suppliedUsd = asNumber(row.state?.supplyAssetsUsd);
+    const borrowedUsd = asNumber(row.state?.borrowAssetsUsd);
+    const utilization = asNumber(row.state?.utilization);
+    if (!loan || !collateral || !oracle || !irm || !rates.borrowRate || !rates.supplyRate || liquidityUsd === null) continue;
+    if (liquidityUsd < MIN_LIQUIDITY_USD || rates.borrowApr < 0 || rates.borrowApr >= 1 || rates.supplyApr < 0 || rates.supplyApr >= 1) continue;
     if (!/^0x[0-9a-fA-F]{64}$/.test(marketId) || !/^\d+$/.test(lltv)) continue;
     const assetAddress = action === 'borrow' ? collateral : loan;
     const asset = findBtcToken(chainId, assetAddress);
@@ -134,8 +221,9 @@ function readMorphoVenues(payload: unknown, action: 'borrow' | 'lend'): Venue[] 
       lltv,
     };
     if (morphoMarketId(market).toLowerCase() !== market.marketId.toLowerCase()) continue;
-    const maxLtv = Number(BigInt(lltv)) / 1e18;
+    const liquidationLtv = Number(BigInt(lltv)) / 1e18;
     const usdc = CHAINS[chainId].usdc;
+    const fetchedAt = Date.now();
     const venue: Venue = {
       id: `${action}:morpho:${chainId}:${market.marketId}`,
       protocol: 'morpho',
@@ -148,11 +236,19 @@ function readMorphoVenues(payload: unknown, action: 'borrow' | 'lend'): Venue[] 
       loanSymbol: action === 'borrow' ? 'USDC' : String(row.collateralAsset?.symbol ?? 'Collateral'),
       loanAddress: action === 'borrow' ? usdc.address : collateral,
       loanDecimals: action === 'borrow' ? usdc.decimals : Number(row.collateralAsset?.decimals ?? 18),
-      borrowApr: borrowApr ?? 0,
-      supplyApr: supplyApr ?? 0,
-      loanSupplyApr: action === 'borrow' ? supplyApr ?? 0 : undefined,
-      maxLtv,
+      ...rates,
+      loanSupplyApr: action === 'borrow' ? rates.supplyApr : undefined,
+      maxLtv: liquidationLtv,
       liquidityUsd,
+      liquidity: {
+        availableToBorrow: liquidityUsd,
+        totalSupplied: suppliedUsd ?? undefined,
+        totalBorrowed: borrowedUsd ?? undefined,
+        utilization: utilization ?? undefined,
+      },
+      collateralRisk: { liquidationLtv, parameterSource: 'live' },
+      freshness: { source: 'Morpho GraphQL', fetchedAt },
+      utilization: utilization ?? undefined,
       priceUsd: 0,
       morpho: market,
     };
@@ -168,7 +264,14 @@ type AaveReserve = {
   isPaused?: unknown;
   aToken?: { address?: unknown };
   vToken?: { address?: unknown };
-  supplyInfo?: { apy?: { value?: unknown }; maxLTV?: { value?: unknown }; canBeCollateral?: unknown; total?: { value?: unknown } };
+  supplyInfo?: {
+    apy?: { value?: unknown };
+    maxLTV?: { value?: unknown };
+    liquidationThreshold?: { value?: unknown };
+    liquidationBonus?: { value?: unknown };
+    canBeCollateral?: unknown;
+    total?: { value?: unknown };
+  };
   borrowInfo?: { apy?: { value?: unknown }; availableLiquidity?: { amount?: { value?: unknown } } };
 };
 
@@ -189,12 +292,12 @@ function readAaveVenues(payload: unknown): { venues: Venue[]; prices: number[] }
       const address = asAddress(reserve.underlyingToken?.address);
       return address !== null && address === CHAINS[chainId].usdc.address;
     });
-    const usdcBorrowApr = asNumber(usdc?.borrowInfo?.apy?.value);
-    const usdcSupplyApr = asNumber(usdc?.supplyInfo?.apy?.value) ?? 0;
+    const usdcRates = sourceRates('APY', asNumber(usdc?.borrowInfo?.apy?.value), asNumber(usdc?.supplyInfo?.apy?.value) ?? 0);
     const usdcLiquidity = asNumber(usdc?.borrowInfo?.availableLiquidity?.amount?.value);
     const usdcPrice = asNumber(usdc?.usdExchangeRate) ?? 1;
     const usdcLiquidityUsd = usdcLiquidity === null ? 0 : usdcLiquidity * usdcPrice;
     const usdcDebtToken = asAddress(usdc?.vToken?.address);
+    const fetchedAt = Date.now();
 
     for (const reserve of reserves) {
       const address = asAddress(reserve.underlyingToken?.address);
@@ -210,13 +313,22 @@ function readAaveVenues(payload: unknown): { venues: Venue[]; prices: number[] }
       const aave: AaveMarket = { pool, aToken, variableDebtToken };
       const paused = reserve.isPaused === true;
       const frozen = reserve.isFrozen === true;
-      const supplyApr = asNumber(reserve.supplyInfo?.apy?.value) ?? 0;
-      const assetBorrowApr = asNumber(reserve.borrowInfo?.apy?.value) ?? 0;
+      const assetRates = sourceRates('APY', asNumber(reserve.borrowInfo?.apy?.value) ?? 0, asNumber(reserve.supplyInfo?.apy?.value) ?? 0);
       const maxLtv = asNumber(reserve.supplyInfo?.maxLTV?.value) ?? 0;
+      const liquidationThreshold = asNumber(reserve.supplyInfo?.liquidationThreshold?.value) ?? undefined;
+      const liquidationBonus = asNumber(reserve.supplyInfo?.liquidationBonus?.value) ?? undefined;
       const supplied = asNumber(reserve.supplyInfo?.total?.value) ?? 0;
       const canBorrowCollateral = reserve.supplyInfo?.canBeCollateral === true && !paused && !frozen && maxLtv > 0;
+      const collateralRisk = {
+        maxLtv,
+        liquidationThreshold,
+        liquidationBonus,
+        liquidationPenalty: liquidationBonus !== undefined && liquidationBonus > 1 ? liquidationBonus - 1 : liquidationBonus,
+        parameterSource: 'live' as const,
+        eMode: { available: false },
+      };
 
-      if (canBorrowCollateral && usdc && usdcDebtToken && usdcBorrowApr !== null && usdcLiquidityUsd >= MIN_LIQUIDITY_USD) {
+      if (canBorrowCollateral && usdc && usdcDebtToken && usdcRates.borrowRate && usdcLiquidityUsd >= MIN_LIQUIDITY_USD) {
         const venue: Venue = {
           id: `borrow:aave:${chainId}:${asset.address}`,
           protocol: 'aave',
@@ -229,11 +341,15 @@ function readAaveVenues(payload: unknown): { venues: Venue[]; prices: number[] }
           loanSymbol: 'USDC',
           loanAddress: CHAINS[chainId].usdc.address,
           loanDecimals: CHAINS[chainId].usdc.decimals,
-          borrowApr: usdcBorrowApr,
-          supplyApr,
-          loanSupplyApr: usdcSupplyApr,
+          ...usdcRates,
+          supplyApr: assetRates.supplyApr,
+          supplyRate: assetRates.supplyRate,
+          loanSupplyApr: usdcRates.supplyApr,
           maxLtv,
           liquidityUsd: usdcLiquidityUsd,
+          liquidity: { availableToBorrow: usdcLiquidityUsd, totalSupplied: supplied * priceUsd },
+          collateralRisk,
+          freshness: { source: 'Aave GraphQL', fetchedAt },
           priceUsd,
           aave: { ...aave, variableDebtToken: usdcDebtToken },
         };
@@ -255,10 +371,12 @@ function readAaveVenues(payload: unknown): { venues: Venue[]; prices: number[] }
           loanSymbol: asset.symbol,
           loanAddress: asset.address,
           loanDecimals: asset.decimals,
-          borrowApr: assetBorrowApr,
-          supplyApr,
+          ...assetRates,
           maxLtv,
           liquidityUsd: lendLiquidity,
+          liquidity: { availableToBorrow: available * priceUsd, totalSupplied: supplied * priceUsd },
+          collateralRisk,
+          freshness: { source: 'Aave GraphQL', fetchedAt },
           priceUsd,
           aave,
         };
@@ -303,9 +421,9 @@ async function loadRates(): Promise<RatesPayload> {
   };
 
   const [morphoBorrow, morphoLend, aave, spot] = await Promise.allSettled([
-    postJson(MORPHO_URL, { query: morphoQuery, variables: { where: borrowWhere } }),
-    postJson(MORPHO_URL, { query: morphoQuery, variables: { where: lendWhere } }),
-    postJson(AAVE_URL, { query: aaveQuery, variables: { request: { chainIds: [1, 8453] } } }),
+    fetchMorphoMarkets(borrowWhere),
+    fetchMorphoMarkets(lendWhere),
+    fetchAaveMarkets(),
     fetchBtcSpot(),
   ]);
 
@@ -327,9 +445,9 @@ async function loadRates(): Promise<RatesPayload> {
   if (btcPriceUsd === 0) btcPriceUsd = await fetchBtcSpot();
 
   const extras = await Promise.allSettled([
-    fetchCompoundVenues(btcPriceUsd),
-    fetchSparkVenues(btcPriceUsd),
-    fetchMoonwellVenues(btcPriceUsd),
+    withTimeout(fetchCompoundVenues(btcPriceUsd), EXTRAS_MS, 'compound-timeout'),
+    withTimeout(fetchSparkVenues(btcPriceUsd), EXTRAS_MS, 'spark-timeout'),
+    withTimeout(fetchMoonwellVenues(btcPriceUsd), EXTRAS_MS, 'moonwell-timeout'),
   ]);
   if (extras[0].status === 'fulfilled') venues = venues.concat(extras[0].value);
   else warnings.push('Compound V3 rates are unavailable.');
@@ -338,16 +456,17 @@ async function loadRates(): Promise<RatesPayload> {
   if (extras[2].status === 'fulfilled') venues = venues.concat(extras[2].value);
   else warnings.push('Moonwell rates are unavailable.');
 
-  venues = applyPrice(venues, btcPriceUsd);
+  venues = dedupeVenues(applyPrice(venues, btcPriceUsd));
   if (venues.length === 0) throw new Error('no safe venues');
 
   return { fetchedAt: Date.now(), btcPriceUsd, venues, warnings };
 }
 
-export function getRates(): Promise<RatesPayload> {
-  if (cache && Date.now() - cache.at < FRESH_MS) return Promise.resolve(cache.payload);
-  if (inflight) return inflight;
-  inflight = loadRates()
+export function getRates(opts?: { bypassCache?: boolean }): Promise<RatesPayload> {
+  const bypass = Boolean(opts?.bypassCache);
+  if (!bypass && cache && Date.now() - cache.at < FRESH_MS) return Promise.resolve(cache.payload);
+  if (!bypass && inflight) return inflight;
+  const request = withTimeout(loadRates(), LOAD_MS, 'rates-timeout')
     .then((payload) => {
       cache = { at: Date.now(), payload };
       return payload;
@@ -357,7 +476,8 @@ export function getRates(): Promise<RatesPayload> {
       throw error;
     })
     .finally(() => {
-      inflight = null;
+      if (inflight === request) inflight = null;
     });
-  return inflight;
+  if (!bypass) inflight = request;
+  return request;
 }

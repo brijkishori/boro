@@ -7,7 +7,7 @@ import type { Venue } from '@/lib/protocol';
 
 type Point = { t: number; borrow: number; supply: number; utilization?: number };
 
-export default function RateChart({ venue }: { venue: Venue }) {
+export default function RateChart({ venue, collapsed = false }: { venue: Venue; collapsed?: boolean }) {
   const [range, setRange] = useState<'7d' | '30d' | '90d'>('30d');
   const [points, setPoints] = useState<Point[]>([]);
 
@@ -32,7 +32,7 @@ export default function RateChart({ venue }: { venue: Venue }) {
   const max = borrow.length > 0 ? Math.max(...borrow) : venue.borrowApr;
   const belowAverage = venue.borrowApr + 0.0005 < average;
 
-  return (
+  const body = (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-1">
         {(['7d', '30d', '90d'] as const).map((item) => (
@@ -61,5 +61,13 @@ export default function RateChart({ venue }: { venue: Venue }) {
         {venue.utilization !== undefined ? ` · Utilization ${(venue.utilization * 100).toFixed(0)}%` : ''}
       </p>
     </div>
+  );
+
+  if (!collapsed) return body;
+  return (
+    <details className="rounded-lg border px-3 py-2">
+      <summary className="cursor-pointer text-xs font-semibold">Rate history</summary>
+      <div className="mt-2">{body}</div>
+    </details>
   );
 }

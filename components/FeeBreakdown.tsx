@@ -3,6 +3,7 @@
 import { chainLabel, protocolLabel, type ChainId, type Venue } from '@/lib/protocol';
 import { formatEth, formatFeeUsd, useFeeEstimate } from '@/components/useNetworkFee';
 import { actionLabel } from '@/components/useSendTx';
+import { formatRate } from '@/lib/finance/format';
 
 function FeeRow({ chainId, action }: { chainId: ChainId; action: string }) {
   const estimate = useFeeEstimate(chainId, action);
@@ -37,7 +38,7 @@ export default function FeeBreakdown({
       </div>
       {interest && interest.principalUsd > 0 && (
         <div className="flex items-center justify-between gap-2">
-          <span>{interest.label} at {(interest.apr * 100).toFixed(2)}% APR</span>
+          <span>{interest.label} at {formatRate(interest.apr)} APR</span>
           <span className="font-semibold text-foreground">≈ {formatFeeUsd(yearly / 12)}/mo · {formatFeeUsd(yearly)}/yr</span>
         </div>
       )}

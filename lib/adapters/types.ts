@@ -32,6 +32,8 @@ export type PositionSnapshot = {
 
 export type ProtocolAdapter = {
   positionReads(venue: Venue, user: Address): ReadCall[];
+  /** Core contract state, separate from oracle/rate enrichment. */
+  authoritativeReads?(venue: Venue, user: Address): { core: ReadCall[]; enrichment: ReadCall[] };
   parsePosition(venue: Venue, results: unknown[]): PositionSnapshot;
   buildSupply(venue: Venue, user: Address, amount: bigint, action: 'borrow' | 'lend'): WriteCall | null;
   buildBorrow(venue: Venue, user: Address, amount: bigint): WriteCall | null;

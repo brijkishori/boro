@@ -14,6 +14,9 @@ export const compoundAdapter: ProtocolAdapter = {
       { address: comet, abi: cometAbi, functionName: 'isBorrowCollateralized', args: [user], chainId: venue.chainId },
     ];
   },
+  authoritativeReads(venue, user) {
+    return { core: compoundAdapter.positionReads(venue, user), enrichment: [] };
+  },
   parsePosition(venue, results) {
     if (!venue.compound) return emptyPosition();
     const collateral = asBigint(results[0]);

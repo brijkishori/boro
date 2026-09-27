@@ -76,18 +76,15 @@ export default function BorrowVsLend({
   if (!compare) return null;
 
   const { borrow, lendUsdc, lendBtc, bestPair } = compare;
-  const betterThanLoan = Boolean(bestPair && bestPair.spread > compare.loopSpread + 0.0005);
-  const headline = compare.loopPays
-    ? 'Lending the borrowed dollars would cover this loan'
-    : 'This loan does not pay for itself if you lend the cash back out';
+  const betterThanLoan = Boolean(bestPair && !bestPair.lend.flagged && bestPair.spread > compare.loopSpread + 0.0005);
 
   return (
     <Card>
       <CardContent className="space-y-3 p-4">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
-            <p className="text-[10px] font-semibold uppercase text-muted-foreground">Borrow vs lend</p>
-            <p className="text-sm font-bold">{headline}</p>
+            <p className="text-[10px] font-semibold uppercase text-muted-foreground">Borrow vs. lend carry analysis</p>
+            <p className="text-sm font-bold">Gross carry at current variable rates</p>
           </div>
           <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <span className="relative flex h-2 w-2">
@@ -123,17 +120,18 @@ export default function BorrowVsLend({
         </div>
 
         <div className="space-y-2 text-xs leading-relaxed text-muted-foreground">
+          <p>Excludes taxes, transaction costs, reward-token price changes and additional protocol risk. Variable rates can move; this is not a forecast that yield will cover borrowing cost.</p>
           {compare.personalized ? (
             <p>
-              Live Aave/Morpho/Compound/Spark/Moonwell quotes. You pay {formatApr(borrow.apr)} on {formatUsdExact(compare.debtUsd)} ({formatUsdExact(borrow.year)} a year).
+              Live quotes. Current borrow cost is {formatApr(borrow.apr)} on {formatUsdExact(compare.debtUsd)} ({formatUsdExact(borrow.year)} a year).
               {lendUsdc
-                ? ` Lending that same USDC on this network at ${protocolLabel(lendUsdc.venue.protocol)} would earn ${formatApr(lendUsdc.apr)} (${formatUsdExact(lendUsdc.year)} a year).`
+                ? ` Base USDC supply yield on this network at ${protocolLabel(lendUsdc.venue.protocol)} is ${formatApr(lendUsdc.apr)} (${formatUsdExact(lendUsdc.year)} a year), incentives excluded.`
                 : ' No trusted USDC supply pool is available on this network.'}
             </p>
           ) : (
             <p>
               Example on {formatUsdExact(compare.debtUsd)} of USDC on {chainLabel(compare.chainId)}: cheapest trusted borrow is {formatApr(borrow.apr)}
-              {lendUsdc ? `, and the best trusted USDC lend is ${formatApr(lendUsdc.apr)}.` : '.'}
+              {lendUsdc ? `, and the highest trusted base USDC lend is ${formatApr(lendUsdc.apr)}.` : '.'}
             </p>
           )}
 
@@ -144,14 +142,9 @@ export default function BorrowVsLend({
             </p>
           )}
 
-          {compare.loopPays ? (
+          {lendUsdc ? (
             <p>
-              Net is about {formatUsdExact(compare.loopNetYear)} a year before gas. Spreads close, and you still have a liquidation price.
-            </p>
-          ) : lendUsdc ? (
-            <p>
-              On this loan, depositing the borrowed dollars back out on the same network is a loss
-              ({signedUsd(compare.loopNetYear)} a year before gas).
+              Gross carry on this pair is {signedUsd(compare.loopNetYear)} a year / {signedUsd(compare.loopNetYear / 12)} a month at unchanged rates.
             </p>
           ) : null}
 
@@ -187,13 +180,13 @@ export default function BorrowVsLend({
             <div className="grid gap-3 text-[11px] sm:grid-cols-2">
               {compare.usdcPools.length > 0 && (
                 <div>
-                  <p className="font-semibold text-foreground">USDC lend APY</p>
+                  <p className="font-semibold text-foreground">USDC lend APR (base)</p>
                   <ul className="mt-1 space-y-0.5 text-muted-foreground">
                     {compare.usdcPools.map((pool) => {
                       const win = poolMatches(pool, bestPair?.lend);
                       return (
                         <li key={`usdc:${pool.protocol}:${pool.chainId}`} className={`flex justify-between gap-2 rounded px-1 ${win ? 'bg-emerald-500/10 font-semibold text-foreground' : ''}`}>
-                          <span>{pool.label}{win ? ' · best lend' : ''}</span>
+                          <span>{pool.label}{win ? ' · best lend' : ''}{pool.needsVerification || pool.flagged ? ' · Needs verification' : ''}{pool.stale ? ' · stale' : ''}</span>
                           <span className="text-foreground">{formatApr(pool.apr)}</span>
                         </li>
                       );

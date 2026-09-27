@@ -1,4 +1,5 @@
 import { formatUnits } from 'viem';
+import { formatRate, formatUsdAdaptive } from '@/lib/finance/format';
 
 const AMOUNT_PATTERN = /^\d+(\.\d+)?$/;
 
@@ -26,29 +27,15 @@ export function formatToken(amount: bigint, decimals: number, maxFraction = 8): 
 }
 
 export function formatApr(apr: number): string {
-  if (!Number.isFinite(apr) || apr < 0) return '—';
-  const percent = apr * 100;
-  if (percent > 0 && percent < 0.01) return '<0.01%';
-  return `${percent.toFixed(2)}%`;
+  return formatRate(apr);
 }
 
 export function formatUsd(value: number): string {
-  if (!Number.isFinite(value)) return '—';
-  return value.toLocaleString('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: value >= 1000 ? 0 : 2,
-  });
+  return formatUsdAdaptive(value, 'compact');
 }
 
 export function formatUsdExact(value: number): string {
-  if (!Number.isFinite(value)) return '—';
-  return value.toLocaleString('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  return formatUsdAdaptive(value, 'precise');
 }
 
 export function tokenPriceUsd(symbol: string, priceUsd: number): number {

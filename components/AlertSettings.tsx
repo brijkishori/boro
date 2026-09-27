@@ -4,12 +4,15 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAccount } from 'wagmi';
 import { toast } from 'sonner';
 import { TEST_ALERT_OPTIONS, type AlertKind } from '@/lib/alertKinds';
+import { markLoanAlertChecked, readLoanAlertRule, writeLoanAlertRule, type LoanAlertRule } from '@/lib/finance/loanAlerts';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { protocolLabel, chainLabel } from '@/lib/protocol';
+import type { OpenPosition } from '@/components/useAllPositions';
 
 type Status = { configured: boolean; subscriber: { email: string; confirmed: boolean; rules: { weekly: boolean; monthly: boolean; thresholdUsd: number; timeZone: string } } | null };
 
-export default function AlertSettings() {
+export default function AlertSettings({ loans = [] }: { loans?: OpenPosition[] }) {
   const { address, isConnected } = useAccount();
   const [status, setStatus] = useState<Status | null>(null);
   const [email, setEmail] = useState('');
@@ -124,24 +127,26 @@ export default function AlertSettings() {
             <p className="text-xs leading-relaxed text-muted-foreground">
               Liquidation-risk messages, a weekly digest (skipped under $1), and a monthly statement will go to this address for the connected wallet.
             </p>
-            <p className="text-xs font-semibold text-muted-foreground">Send a sample</p>
-            <div className="grid grid-cols-2 gap-2">
-              {TEST_ALERT_OPTIONS.map((option) => (
-                <Button
-                  key={option.kind}
-                  type="button"
-                  variant="outline"
-                  className="h-9 text-xs"
-                  disabled={testing !== null}
-                  onClick={() => void sendTest(option.kind)}
-                >
-                  {testing === option.kind ? 'Sending…' : option.label}
-                </Button>
-              ))}
-            </div>
-            <Button type="button" variant="ghost" className="h-9 w-full text-xs" disabled={testing !== null} onClick={() => void sendTest('all')}>
-              {testing === 'all' ? 'Sending all…' : 'Send all samples'}
-            </Button>
+            <details className="rounded-lg border px-3 py-2">
+              <summary className="cursor-pointer text-xs font-semibold">Sample email tests</summary>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {TEST_ALERT_OPTIONS.map((option) => (
+                  <Button
+                    key={option.kind}
+                    type="button"
+                    variant="outline"
+                    className="h-9 text-xs"
+                    disabled={testing !== null}
+                    onClick={() => void sendTest(option.kind)}
+                  >
+                    {testing === option.kind ? 'Sending…' : option.label}
+                  </Button>
+                ))}
+              </div>
+              <Button type="button" variant="ghost" className="mt-2 h-9 w-full text-xs" disabled={testing !== null} onClick={() => void sendTest('all')}>
+                {testing === 'all' ? 'Sending all…' : 'Send all samples'}
+              </Button>
+            </details>
             <Button type="button" variant="outline" className="h-10 w-full" onClick={() => setEditing(true)}>
               Change email
             </Button>
@@ -170,7 +175,66 @@ export default function AlertSettings() {
             )}
           </>
         )}
+        {loans.length > 0 && (
+          <div className="space-y-2 border-t pt-3">
+            <p className="text-xs font-semibold">Per-loan thresholds</p>
+            {loans.map((loan) => (
+              <LoanAlertEditor key={loan.venue.id} loan={loan} />
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+function LoanAlertEditor({ loan }: { loan: OpenPosition }) {
+  const [rule, setRule] = useState<LoanAlertRule>(() => readLoanAlertRule(loan.venue.id));
+
+  function save(next: LoanAlertRule) {
+    writeLoanAlertRule(next);
+    setRule(next);
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border px-3 py-2 text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <p className="font-semibold">{protocolLabel(loan.venue.protocol)} · {chainLabel(loan.venue.chainId)} · {loan.venue.assetSymbol}</p>
+        <label className="flex items-center gap-1">
+          <input type="checkbox" checked={rule.enabled} onChange={(event) => save({ ...rule, enabled: event.target.checked })} />
+          {rule.enabled ? 'Enabled' : 'Disabled'}
+        </label>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <label>Borrow APR %
+          <input className="mt-1 h-8 w-full rounded border bg-background px-2" inputMode="decimal" value={rule.borrowAprThreshold !== undefined ? String(rule.borrowAprThreshold * 100) : ''} onChange={(event) => save({ ...rule, borrowAprThreshold: event.target.value ? Number(event.target.value) / 100 : undefined })} />
+        </label>
+        <label>Health factor
+          <input className="mt-1 h-8 w-full rounded border bg-background px-2" inputMode="decimal" value={rule.healthFactorThreshold ?? ''} onChange={(event) => save({ ...rule, healthFactorThreshold: event.target.value ? Number(event.target.value) : undefined })} />
+        </label>
+        <label>LTV %
+          <input className="mt-1 h-8 w-full rounded border bg-background px-2" inputMode="decimal" value={rule.ltvThreshold !== undefined ? String(rule.ltvThreshold * 100) : ''} onChange={(event) => save({ ...rule, ltvThreshold: event.target.value ? Number(event.target.value) / 100 : undefined })} />
+        </label>
+        <label>BTC cushion %
+          <input className="mt-1 h-8 w-full rounded border bg-background px-2" inputMode="decimal" value={rule.liquidationDistanceThreshold !== undefined ? String(rule.liquidationDistanceThreshold * 100) : ''} onChange={(event) => save({ ...rule, liquidationDistanceThreshold: event.target.value ? Number(event.target.value) / 100 : undefined })} />
+        </label>
+        <label>BTC liquidation price
+          <input className="mt-1 h-8 w-full rounded border bg-background px-2" inputMode="decimal" value={rule.liquidationPriceThreshold ?? ''} onChange={(event) => save({ ...rule, liquidationPriceThreshold: event.target.value ? Number(event.target.value) : undefined })} />
+        </label>
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <label className="flex items-center gap-1"><input type="checkbox" checked={rule.utilizationSpike} onChange={(event) => save({ ...rule, utilizationSpike: event.target.checked })} />Utilization spike</label>
+        <label className="flex items-center gap-1"><input type="checkbox" checked={rule.significantRateChange} onChange={(event) => save({ ...rule, significantRateChange: event.target.checked })} />Significant rate change</label>
+        <label className="flex items-center gap-1"><input type="checkbox" checked={rule.monthlyStatement} onChange={(event) => save({ ...rule, monthlyStatement: event.target.checked })} />Monthly statement</label>
+      </div>
+      <p className="text-muted-foreground">
+        {rule.enabled ? 'Enabled' : 'Disabled'}
+        {rule.lastChecked ? ` · last checked ${new Date(rule.lastChecked).toLocaleString()}` : ' · not checked yet'}
+        {rule.lastNotified ? ` · last notification ${new Date(rule.lastNotified).toLocaleString()}` : ' · no notification yet'}
+      </p>
+      <Button type="button" variant="outline" className="h-8 text-xs" onClick={() => setRule(markLoanAlertChecked(loan.venue.id))}>
+        Mark checked now
+      </Button>
+    </div>
   );
 }

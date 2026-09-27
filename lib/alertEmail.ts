@@ -3,6 +3,7 @@ import type { PositionSnapshot } from '@/lib/adapters';
 import { type AlertKind, ALERT_SUBJECTS } from '@/lib/alertKinds';
 import { alertToken, appUrl, unsubscribeUrl } from '@/lib/alerts';
 import { formatApr, formatToken, formatUsd, formatUsdExact } from '@/lib/amount';
+import { formatHealthFactor, formatLtv, formatPercent } from '@/lib/finance/format';
 import { projectedInterest } from '@/lib/opportunities';
 import { chainLabel, protocolLabel, type Venue } from '@/lib/protocol';
 
@@ -50,9 +51,9 @@ export function loanFacts(venue: Venue, snapshot: PositionSnapshot): LoanFacts {
     collateralUsd: formatUsdExact(collateralUsd),
     debt: `${formatToken(snapshot.debt, venue.loanDecimals)} USDC`,
     debtUsd: formatUsdExact(debtUsd),
-    healthFactor: snapshot.healthFactor === null ? 'No debt' : snapshot.healthFactor.toFixed(2),
-    ltv: `${(snapshot.ltv * 100).toFixed(1)}%`,
-    maxLtv: `${(venue.maxLtv * 100).toFixed(0)}%`,
+    healthFactor: snapshot.healthFactor === null ? 'No debt' : formatHealthFactor(snapshot.healthFactor),
+    ltv: formatLtv(snapshot.ltv),
+    maxLtv: formatPercent(venue.maxLtv, 0, { exact: true }),
     btcPrice: formatUsd(venue.priceUsd),
     liquidationPrice: snapshot.liquidationPrice > 0 ? formatUsd(snapshot.liquidationPrice) : '—',
     dropPct: drop > 0 ? `${drop.toFixed(1)}%` : '—',

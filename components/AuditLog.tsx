@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { actionLabel } from '@/components/useSendTx';
@@ -36,6 +36,8 @@ export default function AuditLog({
   episodes: LoanEpisode[];
   durable: boolean;
 }) {
+  const [actionFilter, setActionFilter] = useState('all');
+  const [protocolFilter, setProtocolFilter] = useState('all');
   const totals = useMemo(() => {
     const open = episodes.filter((episode) => episode.status === 'open');
     const closed = episodes.filter((episode) => episode.status === 'closed');
@@ -113,12 +115,26 @@ export default function AuditLog({
         })}
 
         <div className="space-y-2">
-          <p className="text-[10px] font-semibold uppercase text-muted-foreground">Actions</p>
-          {events.slice(0, 40).map((event) => (
+          <p className="text-[10px] font-semibold uppercase text-muted-foreground">Raw transactions</p>
+          <div className="flex flex-wrap gap-2">
+            <select className="h-8 rounded-md border bg-background px-2 text-xs" value={actionFilter} onChange={(event) => setActionFilter(event.target.value)}>
+              <option value="all">All actions</option>
+              {['borrow', 'repay', 'supply', 'withdraw', 'approve', 'seed'].map((action) => (
+                <option key={action} value={action}>{action}</option>
+              ))}
+            </select>
+            <select className="h-8 rounded-md border bg-background px-2 text-xs" value={protocolFilter} onChange={(event) => setProtocolFilter(event.target.value)}>
+              <option value="all">All protocols</option>
+              {['morpho', 'aave', 'compound', 'spark', 'moonwell'].map((protocol) => (
+                <option key={protocol} value={protocol}>{proto(protocol)}</option>
+              ))}
+            </select>
+          </div>
+          {events.filter((event) => (actionFilter === 'all' || event.action === actionFilter) && (protocolFilter === 'all' || event.protocol === protocolFilter)).slice(0, 40).map((event) => (
             <div key={event.hash} className="flex items-start justify-between gap-3 border-b pb-2 last:border-b-0">
               <div>
                 <p className="font-semibold">
-                  {actionLabel(event.action)}
+                  {actionLabel(event.action, { closing: event.closing })}
                   {event.protocol ? ` · ${proto(event.protocol)}` : ''}
                   {isChainId(event.chainId) ? ` · ${chainLabel(event.chainId)}` : ''}
                 </p>

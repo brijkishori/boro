@@ -1,24 +1,25 @@
 'use client';
 
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useReadContracts } from 'wagmi';
 import type { Address } from 'viem';
 import { adapterFor, type PositionSnapshot } from '@/lib/adapters';
 import { emptyPosition } from '@/lib/adapters/position';
+import { overlayCachedPosition, positionCacheVersion, readFreshBalance, subscribeFreshBalance, subscribeFreshPosition } from '@/lib/finance/positionCache';
 import type { Venue } from '@/lib/protocol';
 
-function venueKey(venue: Venue | null, user: Address | undefined) {
-  return venue && user ? `${venue.id}:${user.toLowerCase()}` : '';
+export function useFreshTokenBalance(token: Address | undefined, chainId: number | undefined, user: Address | undefined) {
+  return useSyncExternalStore(subscribeFreshBalance, () => readFreshBalance(token, chainId, user), () => null);
 }
 
 export function usePosition(venue: Venue | null, user: Address | undefined, enabled: boolean) {
   const adapter = venue ? adapterFor(venue) : null;
-  const key = venueKey(venue, user);
+  const cacheEpoch = useSyncExternalStore(subscribeFreshPosition, positionCacheVersion, () => 0);
   const reads = useMemo(
     () => (venue && user && adapter ? adapter.positionReads(venue, user) : []),
-    [adapter, key, user, venue],
+    [adapter, user, venue],
   );
-  const last = useRef<{ key: string; snapshot: PositionSnapshot }>({ key: '', snapshot: emptyPosition() });
+  const refreshedEpoch = useRef(0);
   const { data, refetch, isFetching } = useReadContracts({
     contracts: reads.map((call) => ({
       address: call.address,
@@ -33,15 +34,18 @@ export function usePosition(venue: Venue | null, user: Address | undefined, enab
       placeholderData: (previous) => previous,
     },
   });
+  useEffect(() => {
+    if (!enabled || cacheEpoch === 0 || refreshedEpoch.current === cacheEpoch) return;
+    refreshedEpoch.current = cacheEpoch;
+    void refetch();
+  }, [cacheEpoch, enabled, refetch]);
   const snapshot: PositionSnapshot = useMemo(() => {
-    if (!venue || !adapter) return last.current.key === key ? last.current.snapshot : emptyPosition();
+    if (!venue || !adapter) return emptyPosition();
     const results = (data ?? []).map((row) => row.result);
-    if (results.length === 0 || results.some((value) => value === undefined)) {
-      return last.current.key === key ? last.current.snapshot : emptyPosition();
-    }
-    const next = adapter.parsePosition(venue, results);
-    last.current = { key, snapshot: next };
-    return next;
-  }, [adapter, data, key, venue]);
+    const parsed = results.length === 0 || results.some((value) => value === undefined)
+      ? emptyPosition()
+      : adapter.parsePosition(venue, results);
+    return cacheEpoch >= 0 ? overlayCachedPosition(venue, user, parsed) : parsed;
+  }, [adapter, cacheEpoch, data, user, venue]);
   return { snapshot, refetch, isFetching };
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { isVenueSafe, type RatesPayload, type Venue } from '@/lib/protocol';
+import { dedupeVenues, isVenueSafe, type RatesPayload, type Venue } from '@/lib/protocol';
 
 function readPayload(body: unknown): RatesPayload | null {
   if (!body || typeof body !== 'object') return null;
@@ -18,7 +18,7 @@ function readPayload(body: unknown): RatesPayload | null {
     fetchedAt: row.fetchedAt,
     btcPriceUsd: typeof row.btcPriceUsd === 'number' ? row.btcPriceUsd : 0,
     warnings: Array.isArray(row.warnings) ? row.warnings.filter((item) => typeof item === 'string') : [],
-    venues,
+    venues: dedupeVenues(venues),
   };
 }
 
@@ -29,7 +29,7 @@ export function useRates() {
 
   const refresh = useCallback(async () => {
     try {
-      const response = await fetch('/api/rates', { cache: 'no-store' });
+      const response = await fetch('/api/rates', { cache: 'no-store', signal: AbortSignal.timeout(25_000) });
       const body: unknown = await response.json();
       const parsed = readPayload(body);
       if (!response.ok || !parsed) {

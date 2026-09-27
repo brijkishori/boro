@@ -55,7 +55,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <main className="mx-auto w-full max-w-3xl overflow-x-hidden px-3 py-4 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
             {children}
           </main>
-          <Toaster position="bottom-center" theme="system" /> 
+          <Toaster position="top-center" theme="system" offset={72} /> 
         </Providers>
 
         <GoogleAnalytics gaId="G-5N0BHRH5E1" />

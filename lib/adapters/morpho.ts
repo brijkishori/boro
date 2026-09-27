@@ -1,8 +1,8 @@
-import { maxUint256, type Address } from 'viem';
+import { maxUint256 } from 'viem';
 import { aavePoolAbi, erc20Abi, morphoAbi, oracleAbi } from '@/lib/abi';
 import { MORPHO_BLUE, morphoParams, type Venue } from '@/lib/protocol';
 import { applySafetyBuffer, morphoCollateralToLoan, morphoDebtAssets, morphoMaxBorrowAssets } from '@/lib/risk';
-import { aaveLikeSnapshot, asBigint, emptyPosition, liquidationFromTokens, ltvFromUsd, morphoWithdrawMax } from './position';
+import { aaveLikeSnapshot, asBigint, emptyPosition, fieldAt, healthFromUsd, liquidationFromTokens, ltvFromUsd, morphoWithdrawMax } from './position';
 import type { ProtocolAdapter, WriteCall } from './types';
 import { formatUnits } from 'viem';
 
@@ -16,15 +16,24 @@ export const morphoAdapter: ProtocolAdapter = {
       { address: market.oracle, abi: oracleAbi, functionName: 'price', chainId: venue.chainId },
     ];
   },
+  authoritativeReads(venue, user) {
+    const reads = morphoAdapter.positionReads(venue, user);
+    return {
+      core: reads.filter((call) => call.functionName === 'position' || call.functionName === 'market'),
+      enrichment: reads.filter((call) => call.functionName === 'price'),
+    };
+  },
   parsePosition(venue, results) {
     const market = venue.morpho;
     if (!market) return emptyPosition();
-    const position = results[0] as readonly [bigint, bigint, bigint] | undefined;
-    const totals = results[1] as readonly bigint[] | undefined;
     const oracle = asBigint(results[2]);
-    const collateral = position?.[2] ?? 0n;
-    const shares = position?.[1] ?? 0n;
-    const debt = morphoDebtAssets(shares, totals?.[2] ?? 0n, totals?.[3] ?? 0n);
+    const collateral = fieldAt(results[0], 2, 'collateral');
+    const shares = fieldAt(results[0], 1, 'borrowShares');
+    const debt = morphoDebtAssets(
+      shares,
+      fieldAt(results[1], 2, 'totalBorrowAssets'),
+      fieldAt(results[1], 3, 'totalBorrowShares'),
+    );
     const maxBorrow = applySafetyBuffer(morphoMaxBorrowAssets(collateral, oracle, BigInt(market.lltv)));
     const borrowRoom = maxBorrow > debt ? maxBorrow - debt : 0n;
     const collateralUsd = Number(formatUnits(morphoCollateralToLoan(collateral, oracle), venue.loanDecimals));
@@ -35,7 +44,7 @@ export const morphoAdapter: ProtocolAdapter = {
       maxBorrow,
       borrowRoom,
       withdrawMax: morphoWithdrawMax(collateral, debt, oracle, BigInt(market.lltv)),
-      healthFactor: debtUsd > 0 && venue.maxLtv > 0 ? (collateralUsd * venue.maxLtv) / debtUsd : null,
+      healthFactor: healthFromUsd(collateralUsd, debtUsd, venue.maxLtv),
       ltv: ltvFromUsd(collateralUsd, debtUsd),
       liquidationPrice: liquidationFromTokens(Number(formatUnits(collateral, venue.assetDecimals)), debtUsd, venue.maxLtv),
       ready: oracle > 0n || collateral === 0n,
@@ -81,6 +90,9 @@ export const aaveLikeAdapter: ProtocolAdapter = {
       { address: aave.pool, abi: aavePoolAbi, functionName: 'getUserAccountData', args: [user], chainId: venue.chainId },
       { address: aave.variableDebtToken, abi: erc20Abi, functionName: 'balanceOf', args: [user], chainId: venue.chainId },
     ];
+  },
+  authoritativeReads(venue, user) {
+    return { core: aaveLikeAdapter.positionReads(venue, user), enrichment: [] };
   },
   parsePosition(venue, results) {
     const collateral = asBigint(results[0]);

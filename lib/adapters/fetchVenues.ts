@@ -1,5 +1,6 @@
-import { formatUnits, getAddress, type Address } from 'viem';
+import { formatUnits, getAddress } from 'viem';
 import { aaveDataProviderAbi, cometAbi, moonwellComptrollerAbi, moonwellTokenAbi } from '@/lib/abi';
+import { normalizeBorrowRate } from '@/lib/finance/rates';
 import {
   CHAINS,
   COMETS,
@@ -12,6 +13,15 @@ import {
   type Venue,
 } from '@/lib/protocol';
 import { publicClient } from '@/lib/rpc';
+
+function aprFields(borrowApr: number, supplyApr: number) {
+  return {
+    borrowApr,
+    supplyApr,
+    borrowRate: normalizeBorrowRate('APR', borrowApr) ?? undefined,
+    supplyRate: normalizeBorrowRate('APR', supplyApr) ?? undefined,
+  };
+}
 
 const RAY = 1e27;
 const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
@@ -61,6 +71,7 @@ export async function fetchCompoundVenues(btcPriceUsd: number): Promise<Venue[]>
         const asset = findBtcToken(chainId, info.asset);
         if (!asset) continue;
         const maxLtv = Number(info.borrowCollateralFactor) / 1e18;
+        const liquidationThreshold = Number(info.liquidateCollateralFactor) / 1e18;
         const venue: Venue = {
           id: `borrow:compound:${chainId}:${asset.address}`,
           protocol: 'compound',
@@ -73,11 +84,18 @@ export async function fetchCompoundVenues(btcPriceUsd: number): Promise<Venue[]>
           loanSymbol: 'USDC',
           loanAddress: CHAINS[chainId].usdc.address,
           loanDecimals: 6,
-          borrowApr,
-          supplyApr,
+          ...aprFields(borrowApr, supplyApr),
           loanSupplyApr: supplyApr,
           maxLtv,
           liquidityUsd,
+          liquidity: {
+            availableToBorrow: liquidityUsd,
+            totalSupplied: Number(formatUnits(totalSupply, 6)),
+            totalBorrowed: Number(formatUnits(totalBorrow, 6)),
+            utilization: utilizationRatio,
+          },
+          collateralRisk: { maxLtv, liquidationThreshold, parameterSource: 'live' },
+          freshness: { source: `Compound V3 ${chainId === 1 ? 'Ethereum' : 'Base'}`, fetchedAt: Date.now() },
           priceUsd: btcPriceUsd,
           utilization: utilizationRatio,
           compound: { comet, minBorrow: minBorrow.toString() },
@@ -110,9 +128,11 @@ export async function fetchSparkVenues(btcPriceUsd: number): Promise<Venue[]> {
         client.readContract({ address: SPARK_DATA_PROVIDER, abi: aaveDataProviderAbi, functionName: 'getReserveData', args: [token.address] }),
         client.readContract({ address: SPARK_DATA_PROVIDER, abi: aaveDataProviderAbi, functionName: 'getReserveTokensAddresses', args: [token.address] }),
       ]);
-      const [decimals, ltvBps, , , , asCollateral, , , active, frozen] = config;
+      const [decimals, ltvBps, liqThresholdBps, liqBonusBps, , asCollateral, , , active, frozen] = config;
       if (!active || frozen || !asCollateral || ltvBps === 0n || decimals === 0n) continue;
       const maxLtv = Number(ltvBps) / 10_000;
+      const liquidationThreshold = Number(liqThresholdBps) / 10_000;
+      const liquidationBonus = Number(liqBonusBps) / 10_000;
       const aave = { pool: SPARK_POOL, aToken: tokens[0], variableDebtToken: usdcTokens[2] };
       const borrowVenue: Venue = {
         id: `borrow:spark:${chainId}:${token.address}`,
@@ -126,11 +146,20 @@ export async function fetchSparkVenues(btcPriceUsd: number): Promise<Venue[]> {
         loanSymbol: 'USDC',
         loanAddress: usdc,
         loanDecimals: 6,
-        borrowApr,
-        supplyApr: rayApr(data[5]),
+        ...aprFields(borrowApr, rayApr(data[5])),
         loanSupplyApr: usdcSupplyApr,
         maxLtv,
         liquidityUsd,
+        liquidity: { availableToBorrow: liquidityUsd },
+        collateralRisk: {
+          maxLtv,
+          liquidationThreshold,
+          liquidationBonus,
+          liquidationPenalty: liquidationBonus > 1 ? liquidationBonus - 1 : undefined,
+          parameterSource: 'live',
+          eMode: { available: false },
+        },
+        freshness: { source: 'Spark on-chain', fetchedAt: Date.now() },
         priceUsd: btcPriceUsd,
         aave,
       };
@@ -194,11 +223,20 @@ export async function fetchMoonwellVenues(btcPriceUsd: number): Promise<Venue[]>
         loanSymbol: 'USDC',
         loanAddress: CHAINS[chainId].usdc.address,
         loanDecimals: 6,
-        borrowApr,
-        supplyApr: perTimestampApr(await client.readContract({ address: mCollateral, abi: moonwellTokenAbi, functionName: 'supplyRatePerTimestamp' })),
+        ...aprFields(
+          borrowApr,
+          perTimestampApr(await client.readContract({ address: mCollateral, abi: moonwellTokenAbi, functionName: 'supplyRatePerTimestamp' })),
+        ),
         loanSupplyApr: usdcSupplyApr,
         maxLtv,
         liquidityUsd: usdcLiquidity,
+        liquidity: {
+          availableToBorrow: usdcLiquidity,
+          totalBorrowed: Number(formatUnits(totalBorrows, 6)),
+          utilization: cash + totalBorrows > 0n ? Number(totalBorrows) / Number(cash + totalBorrows) : 0,
+        },
+        collateralRisk: { maxLtv, parameterSource: 'live' },
+        freshness: { source: 'Moonwell on-chain', fetchedAt: Date.now() },
         priceUsd: btcPriceUsd,
         utilization: cash + totalBorrows > 0n ? Number(totalBorrows) / Number(cash + totalBorrows) : 0,
         moonwell,

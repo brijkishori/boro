@@ -1,4 +1,6 @@
 import { formatUnits } from 'viem';
+import { EXAMPLE_CARRY_PRINCIPAL, grossAnnualCarry, isAprDecimal } from '@/lib/finance/carry';
+import { isRateStale, usdcBaseSupplyApr, usdcYieldDisagreement, yieldNeedsVerification } from '@/lib/finance/yield';
 import { isVenueSafe, protocolLabel, venueConfidence, type ChainId, type ProtocolId, type Venue } from '@/lib/protocol';
 import type { PositionSnapshot } from '@/lib/adapters';
 
@@ -30,6 +32,7 @@ export function refinanceHint(position: { venue: Venue; snapshot: PositionSnapsh
 }
 
 export function projectedInterest(debtUsd: number, apr: number) {
+  if (!(debtUsd > 0) || !isAprDecimal(apr)) return { month: 0, quarter: 0, year: 0 };
   return {
     month: debtUsd * apr / 12,
     quarter: debtUsd * apr / 4,
@@ -50,6 +53,9 @@ export type ComparedPool = {
   label: string;
   apr: number;
   kind: 'borrow' | 'usdc' | 'btc';
+  flagged?: boolean;
+  stale?: boolean;
+  needsVerification?: boolean;
 };
 
 export type MarketPair = {
@@ -82,9 +88,7 @@ export type BorrowVsLend = {
 };
 
 function usdcSupplyApr(venue: Venue): number | null {
-  if (typeof venue.loanSupplyApr === 'number' && Number.isFinite(venue.loanSupplyApr)) return venue.loanSupplyApr;
-  if (venue.protocol === 'morpho' || venue.protocol === 'compound') return venue.supplyApr;
-  return null;
+  return usdcBaseSupplyApr(venue) ?? null;
 }
 
 function collateralEarnsSupply(venue: Venue): boolean {
@@ -104,19 +108,30 @@ function side(venue: Venue, apr: number, notionalUsd: number): CarrySide {
   return { venue, apr, month: interest.month, year: interest.year };
 }
 
+function liveTrusted(venues: Venue[]) {
+  return trusted(venues).filter((venue) => !isRateStale(venue.freshness?.fetchedAt));
+}
+
 function bestUsdcLend(venues: Venue[], chainId: ChainId): Venue | null {
-  const pool = trusted(venues).filter((venue) => venue.chainId === chainId && usdcSupplyApr(venue) !== null);
-  return bestBy(pool, (venue) => usdcSupplyApr(venue) ?? 0);
+  const source = liveTrusted(venues).length > 0 ? liveTrusted(venues) : trusted(venues);
+  const pool = source.filter((venue) => {
+    if (venue.chainId !== chainId || usdcSupplyApr(venue) === null) return false;
+    return !usdcYieldDisagreement(venues, venue.protocol, venue.chainId)
+      && !yieldNeedsVerification(venues, venue);
+  });
+  return bestBy(pool, (venue) => usdcSupplyApr(venue) ?? Number.NEGATIVE_INFINITY);
 }
 
 function bestBtcLend(venues: Venue[], chainId: ChainId, symbol: string): Venue | null {
-  const same = trusted(venues).filter((venue) => venue.action === 'lend' && venue.chainId === chainId && venue.assetSymbol === symbol);
-  return bestBy(same, (venue) => venue.supplyApr)
-    ?? bestBy(trusted(venues).filter((venue) => venue.action === 'lend' && venue.chainId === chainId), (venue) => venue.supplyApr);
+  const pool = (liveTrusted(venues).length > 0 ? liveTrusted(venues) : trusted(venues))
+    .filter((venue) => venue.action === 'lend' && venue.chainId === chainId && isAprDecimal(venue.supplyApr));
+  const same = pool.filter((venue) => venue.assetSymbol === symbol);
+  return bestBy(same, (venue) => venue.supplyApr) ?? bestBy(pool, (venue) => venue.supplyApr);
 }
 
 function cheapestBorrow(venues: Venue[], chainId: ChainId): Venue | null {
-  const pool = trusted(venues).filter((venue) => venue.action === 'borrow' && venue.chainId === chainId);
+  const source = liveTrusted(venues).length > 0 ? liveTrusted(venues) : trusted(venues);
+  const pool = source.filter((venue) => venue.action === 'borrow' && venue.chainId === chainId && isAprDecimal(venue.borrowApr));
   return pool.slice().sort((left, right) => left.borrowApr - right.borrowApr)[0] ?? null;
 }
 
@@ -138,6 +153,9 @@ function collectPools(venues: Venue[], kind: ComparedPool['kind'], rateOf: (venu
       label: `${protocolLabel(venue.protocol)} · ${venue.chainId === 1 ? 'Ethereum' : 'Base'}`,
       apr,
       kind,
+      flagged: kind === 'usdc' && (usdcYieldDisagreement(venues, venue.protocol, venue.chainId) || yieldNeedsVerification(venues, venue)),
+      stale: isRateStale(venue.freshness?.fetchedAt),
+      needsVerification: kind === 'usdc' && yieldNeedsVerification(venues, venue),
     });
   }
   return [...best.values()].sort((left, right) => (kind === 'borrow' ? left.apr - right.apr : right.apr - left.apr));
@@ -148,14 +166,17 @@ function bestSameChainPair(borrowPools: ComparedPool[], usdcPools: ComparedPool[
   for (const borrow of borrowPools) {
     for (const lend of usdcPools) {
       if (lend.chainId !== borrow.chainId) continue;
+      if (lend.flagged || lend.stale || borrow.stale) continue;
+      const year = grossAnnualCarry(debtUsd, borrow.apr, lend.apr);
+      if (year === null) continue;
       const spread = lend.apr - borrow.apr;
       if (!winner || spread > winner.spread) {
         winner = {
           borrow,
           lend,
           spread,
-          month: debtUsd * spread / 12,
-          year: debtUsd * spread,
+          month: year / 12,
+          year,
         };
       }
     }
@@ -178,7 +199,7 @@ function finishCompare(input: {
   const lendBtcVenue = bestBtcLend(input.venues, input.chainId, input.assetSymbol);
   const usdcApr = lendUsdcVenue ? usdcSupplyApr(lendUsdcVenue) : null;
   const loopSpread = usdcApr === null ? Number.NaN : usdcApr - input.borrowApr;
-  const loopNetYear = Number.isFinite(loopSpread) ? input.debtUsd * loopSpread : 0;
+  const loopNetYear = usdcApr === null ? 0 : (grossAnnualCarry(input.debtUsd, input.borrowApr, usdcApr) ?? 0);
   const collateralEarnYear = input.collateralUsd * input.collateralEarnApr;
   const usdcPools = collectPools(input.venues, 'usdc', usdcSupplyApr);
   const borrowPools = collectPools(input.venues, 'borrow', (venue) => venue.action === 'borrow' ? venue.borrowApr : null);
@@ -246,7 +267,7 @@ export function compareBorrowVsLend(
   const borrowVenue = cheapestBorrow(venues, chainId);
   if (!borrowVenue) return null;
   return finishCompare({
-    debtUsd: 100,
+    debtUsd: EXAMPLE_CARRY_PRINCIPAL,
     collateralUsd: 0,
     assetSymbol: borrowVenue.assetSymbol,
     chainId,

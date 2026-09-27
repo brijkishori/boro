@@ -30,7 +30,7 @@ export function LedgerSplit({
   seeded?: boolean;
 }) {
   const cells = [
-    ['Debt', split.debt],
+    ['Total debt', split.debt],
     ['Principal remaining', split.principalRemaining],
     ['Interest remaining', split.interestRemaining],
     ['Interest so far', split.interestSoFar],

@@ -9,7 +9,7 @@ import WrongNetworkActions from '@/components/WrongNetworkActions';
 import GasNotice from '@/components/GasNotice';
 import FeeBreakdown from '@/components/FeeBreakdown';
 import { GAS_UNITS, useGasCheck } from '@/components/useGasCheck';
-import { usePosition } from '@/components/usePosition';
+import { useFreshTokenBalance, usePosition } from '@/components/usePosition';
 import { adapterFor, approveCall, isolateCall } from '@/lib/adapters';
 import { erc20Abi } from '@/lib/abi';
 import { approvalStep, formatApr, formatToken, formatUsdExact, tokenAmountUsd, tokenPriceUsd } from '@/lib/amount';
@@ -33,12 +33,13 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
   const [withdrawAmount, setWithdrawAmount] = useState<bigint | null>(null);
   const [supplyEpoch, setSupplyEpoch] = useState(0);
   const [withdrawEpoch, setWithdrawEpoch] = useState(0);
-  const { send, isBusy, isAwaitingWallet, confirmed } = useSendTx();
+  const { send, isBusy, isAwaitingWallet, confirmed, hash, phase, receiptBlock, statusMessage, retryPositionRefresh, cancelPending } = useSendTx();
 
   const safe = quote !== null && isVenueSafe(quote) && quote.action === 'lend';
   const spender = safe && quote ? venueSpender(quote) : null;
   const enabled = Boolean(address && safe);
   const { snapshot, refetch: refetchPosition } = usePosition(safe ? quote : null, address, enabled);
+  const freshAssetBalance = useFreshTokenBalance(quote?.assetAddress, quote?.chainId, address);
   const gas = useGasCheck(quote?.chainId, GAS_UNITS.write);
   const marketChainId = quote?.chainId;
   const otherAsset = quote ? sameAssetOnOtherChain(quote.chainId, quote.assetSymbol) : null;
@@ -68,7 +69,7 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
     query: { enabled: Boolean(enabled && spender), refetchInterval: 20_000 },
   });
   useEffect(() => {
-    if (!confirmed) return;
+    if (!confirmed || confirmed.refreshFailed) return;
     if (confirmed.action === 'supply') {
       setAmount(null);
       setSupplyEpoch((value) => value + 1);
@@ -86,7 +87,7 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
     return <p className="text-sm text-muted-foreground">Choose a lend market above. Lending earns supply APY.</p>;
   }
 
-  const walletBalance = balance ?? 0n;
+  const walletBalance = freshAssetBalance ?? balance ?? 0n;
   const price = tokenPriceUsd(quote.assetSymbol, quote.priceUsd);
   const suppliedBalance = snapshot.collateral;
   const supplyShares = snapshot.extra?.shares ?? 0n;
@@ -101,7 +102,7 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
   const withdrawTooBig = withdrawAmount !== null && withdrawAmount > snapshot.withdrawMax;
   const canIsolate = (quote.protocol === 'aave' || quote.protocol === 'spark') && suppliedBalance > 0n;
 
-  function ledger(value: bigint) {
+  function ledger(value: bigint, closing = false) {
     return {
       wallet: address!,
       venue: quote!,
@@ -111,6 +112,10 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
       debt: snapshot.debt,
       collateral: snapshot.collateral,
       healthFactor: snapshot.healthFactor,
+      shares: snapshot.extra?.shares,
+      positionVenue: quote ?? undefined,
+      user: address,
+      closing,
     };
   }
 
@@ -128,7 +133,7 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
     if (!address) return;
     const amountOut = withdrawAmount && withdrawAmount > 0n ? withdrawAmount : suppliedBalance;
     const call = adapterFor(quote!).buildWithdraw(quote!, address, amountOut, 'lend', { shares: supplyShares });
-    if (call) await send('withdraw', call, ledger(amountOut));
+    if (call) await send('withdraw', call, ledger(amountOut, amountOut >= suppliedBalance));
   }
 
   return (
@@ -195,6 +200,19 @@ export default function LendFlow({ quote, fetchedAt, venues = [], onSelect }: { 
           <Button className="h-12 w-full bg-blue-600 text-white hover:bg-blue-700" disabled={isBusy || stale || !amount || amount <= 0n} onClick={() => void supply()}>
             {isAwaitingWallet ? 'Confirm in wallet…' : isBusy ? 'Confirming…' : 'Lend'}
           </Button>
+        )}
+        {(phase === 'refreshing_position' || phase === 'refresh_failed') && (
+          <div className="space-y-2 rounded-lg border p-3 text-xs">
+            <p className="font-medium">{statusMessage}</p>
+            {hash && <p className="break-all text-muted-foreground">Transaction {hash}</p>}
+            {receiptBlock && <p className="text-muted-foreground">Receipt block {receiptBlock}</p>}
+            {phase === 'refresh_failed' && (
+              <div className="flex gap-2">
+                <Button type="button" variant="outline" className="h-10 flex-1" onClick={() => void retryPositionRefresh()}>Retry position refresh</Button>
+                <Button type="button" variant="outline" className="h-10 flex-1" onClick={cancelPending}>Dismiss</Button>
+              </div>
+            )}
+          </div>
         )}
         {isConnected && <FeeBreakdown quote={quote} actions={[...(step !== 'none' ? ['approve'] : []), 'supply', 'withdraw']} />}
 

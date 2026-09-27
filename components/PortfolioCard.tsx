@@ -59,7 +59,7 @@ export default function PortfolioCard({ venues, btcPrice, onOpen }: { venues: Ve
       <CardContent className="space-y-3 p-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[10px] font-semibold uppercase text-muted-foreground">Your BTC · {networkTitle(network)}</p>
+            <p className="text-[10px] font-semibold uppercase text-muted-foreground">Current on-chain positions · {networkTitle(network)}</p>
             <p className="text-2xl font-bold tracking-tight">{isLoading && rows.length === 0 ? 'Reading…' : `${totalBtc.toFixed(8).replace(/0+$/, '').replace(/\.$/, '')} BTC`}</p>
             <p className="text-sm text-muted-foreground">{formatUsdExact(totalUsd)}</p>
           </div>

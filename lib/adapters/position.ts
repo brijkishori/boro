@@ -1,5 +1,6 @@
 import { formatUnits } from 'viem';
 import { applySafetyBuffer, aaveSafeWithdraw, morphoSafeWithdraw } from '@/lib/risk';
+import { aaveHealthFactor } from '@/lib/finance/liquidation';
 import type { Venue } from '@/lib/protocol';
 import type { PositionSnapshot } from './types';
 
@@ -11,9 +12,18 @@ export function asBigint(value: unknown): bigint {
   return typeof value === 'bigint' ? value : 0n;
 }
 
+/** viem returns named structs as objects; wagmi sometimes returns array-like tuples. */
+export function fieldAt(value: unknown, index: number, name?: string): bigint {
+  if (typeof value === 'bigint') return index === 0 ? value : 0n;
+  if (!value || typeof value !== 'object') return 0n;
+  const record = value as Record<string | number, unknown>;
+  if (name && typeof record[name] === 'bigint') return record[name];
+  if (typeof record[index] === 'bigint') return record[index];
+  return 0n;
+}
+
 export function healthFromUsd(collateralUsd: number, debtUsd: number, liqThreshold: number): number | null {
-  if (!(debtUsd > 0) || !(liqThreshold > 0)) return null;
-  return (collateralUsd * liqThreshold) / debtUsd;
+  return aaveHealthFactor(collateralUsd, debtUsd, liqThreshold);
 }
 
 export function liquidationFromTokens(collateralTokens: number, debtUsd: number, maxLtv: number): number {
@@ -26,23 +36,24 @@ export function ltvFromUsd(collateralUsd: number, debtUsd: number): number {
   return debtUsd / collateralUsd;
 }
 
-export function aaveLikeSnapshot(venue: Venue, collateral: bigint, account: readonly bigint[] | undefined): PositionSnapshot {
-  const debtBase = account?.[1] ?? 0n;
-  const availableBase = account?.[2] ?? 0n;
-  const ltvBps = account?.[4] ?? 0n;
-  const hfRaw = account?.[5] ?? 0n;
+export function aaveLikeSnapshot(venue: Venue, collateral: bigint, account: unknown): PositionSnapshot {
+  const debtBase = fieldAt(account, 1, 'totalDebtBase');
+  const availableBase = fieldAt(account, 2, 'availableBorrowsBase');
+  const ltvBps = fieldAt(account, 4, 'ltv');
+  const hfRaw = fieldAt(account, 5, 'healthFactor');
+  const collateralBase = fieldAt(account, 0, 'totalCollateralBase');
   const debtUsd = Number(formatUnits(debtBase, 8));
   const collateralTokens = Number(formatUnits(collateral, venue.assetDecimals));
   const maxBorrow = applySafetyBuffer(availableBase / 100n);
   const healthFactor = hfRaw > 0n && debtBase > 0n ? Number(hfRaw / 10n ** 14n) / 10_000 : null;
   return {
     collateral,
-    debt: BigInt(Math.max(0, Math.round(debtUsd * 1e6))),
+    debt: debtBase > 0n ? debtBase / 100n : 0n,
     maxBorrow,
     borrowRoom: maxBorrow,
-    withdrawMax: aaveSafeWithdraw(collateral, venue.assetDecimals, venue.priceUsd, account?.[0] ?? 0n, debtBase, ltvBps),
+    withdrawMax: aaveSafeWithdraw(collateral, venue.assetDecimals, venue.priceUsd, collateralBase, debtBase, ltvBps),
     healthFactor,
-    ltv: ltvFromUsd(Number(formatUnits(account?.[0] ?? 0n, 8)), debtUsd),
+    ltv: ltvFromUsd(Number(formatUnits(collateralBase, 8)), debtUsd),
     liquidationPrice: liquidationFromTokens(collateralTokens, debtUsd, venue.maxLtv),
     ready: true,
   };

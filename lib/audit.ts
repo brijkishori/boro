@@ -33,6 +33,13 @@ export type AuditEvent = {
   principalPaid?: string;
   principalRemaining?: string;
   interestRemaining?: string;
+  previewCurrent?: string;
+  previewProjected?: string;
+  previewAt?: number;
+  resultingCollateral?: string;
+  resultingDebt?: string;
+  resultingHealthFactor?: number | null;
+  resultingLtv?: number;
 };
 
 export type LoanEpisode = {
@@ -102,6 +109,9 @@ export type AuditTxInput = {
   closing?: boolean;
   feeWei?: bigint;
   ethUsd?: number | null;
+  previewCurrent?: string;
+  previewProjected?: string;
+  previewAt?: number;
 };
 
 const LOCAL_PREFIX = 'boro:audit:v1:';
@@ -161,6 +171,47 @@ export function splitRepay(principalRemaining: bigint, debtBefore: bigint, repai
   const debtAfter = debtBefore > repaid ? debtBefore - repaid : 0n;
   const interestRemaining = debtAfter > nextPrincipal ? debtAfter - nextPrincipal : 0n;
   return { interestPaid, principalPaid, principalRemaining: nextPrincipal, interestRemaining };
+}
+
+export type LoanLifecycle = {
+  openedAt: number;
+  originalPrincipal: bigint;
+  additionalBorrowing: bigint;
+  principalRepaid: bigint;
+  interestAccrued: bigint;
+  interestPaid: bigint;
+  networkFeeWei: bigint;
+  currentPrincipal: bigint;
+  currentAccruedInterest: bigint;
+};
+
+export function loanLifecycle(
+  episode: LoanEpisode | null | undefined,
+  events: AuditEvent[],
+  currentDebt: bigint,
+): LoanLifecycle | null {
+  if (!episode) return null;
+  const split = liveSplit(episode, currentDebt);
+  const related = events.filter((event) => event.episodeKey === episode.key);
+  const firstBorrow = related
+    .filter((event) => event.action === 'borrow' || event.action === 'seed')
+    .sort((left, right) => left.at - right.at)[0];
+  const originalPrincipal = firstBorrow ? asBig(firstBorrow.amount) : asBig(episode.principalBorrowed);
+  const additionalBorrowing = asBig(episode.principalBorrowed) > originalPrincipal
+    ? asBig(episode.principalBorrowed) - originalPrincipal
+    : 0n;
+  const networkFeeWei = related.reduce((sum, event) => sum + asBig(event.feeWei), 0n);
+  return {
+    openedAt: episode.openedAt,
+    originalPrincipal,
+    additionalBorrowing,
+    principalRepaid: asBig(episode.principalRepaid),
+    interestAccrued: split.interestSoFar,
+    interestPaid: split.interestPaid,
+    networkFeeWei,
+    currentPrincipal: split.principalRemaining,
+    currentAccruedInterest: split.interestRemaining,
+  };
 }
 
 export function liveSplit(episode: LoanEpisode | null | undefined, onChainDebt: bigint): LiveSplit {
@@ -407,6 +458,9 @@ export function buildAuditEvent(input: AuditTxInput): AuditEvent {
     feeWei: (input.feeWei ?? 0n).toString(),
     ethUsd: input.ethUsd ?? null,
     closing: input.closing || undefined,
+    previewCurrent: input.previewCurrent,
+    previewProjected: input.previewProjected,
+    previewAt: input.previewAt,
   };
   if (input.action === 'repay' && key) {
     const episode = findOpenEpisode(rebuildEpisodes(readLocalEvents(wallet)), key);
@@ -432,6 +486,27 @@ export function buildSeedEvent(wallet: string, venue: AuditVenue, debt: bigint, 
     amountUsd: Number(formatUnits(debt, venue.loanDecimals)),
     debt,
   });
+}
+
+export function attachAuditResult(
+  wallet: string,
+  hash: string,
+  actual: { collateral: string; debt: string; healthFactor: number | null; ltv?: number },
+) {
+  const events = readLocalEvents(wallet);
+  let changed = false;
+  const next = events.map((event) => {
+    if (event.hash !== hash || event.resultingDebt !== undefined) return event;
+    changed = true;
+    return {
+      ...event,
+      resultingCollateral: actual.collateral,
+      resultingDebt: actual.debt,
+      resultingHealthFactor: actual.healthFactor,
+      resultingLtv: actual.ltv,
+    };
+  });
+  if (changed) writeLocalEvents(wallet, next);
 }
 
 export function persistAuditEvent(event: AuditEvent) {

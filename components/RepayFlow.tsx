@@ -10,10 +10,30 @@ import WrongNetworkActions from '@/components/WrongNetworkActions';
 import GasNotice from '@/components/GasNotice';
 import FeeBreakdown from '@/components/FeeBreakdown';
 import { GAS_UNITS, useGasCheck } from '@/components/useGasCheck';
-import { usePosition } from '@/components/usePosition';
+import { useFreshTokenBalance, usePosition } from '@/components/usePosition';
 import { adapterFor, approveCall } from '@/lib/adapters';
 import { erc20Abi } from '@/lib/abi';
 import { approvalStep, formatToken, formatUsd, formatUsdExact, tokenAmountUsd } from '@/lib/amount';
+import PositionChangeReview from '@/components/PositionChangeReview';
+import {
+  buildProposedPositionChange,
+  canRequestWallet,
+  serializePositionSnapshot,
+  type PositionChangeAction,
+} from '@/lib/finance/positionChange';
+import {
+  CONFIRM_DRIFT_MESSAGE,
+  CONFIRM_FAIL_MESSAGE,
+  buildConfirmSnapshot,
+  requestWalletAfterConfirm,
+  runConfirmGuard,
+  type ConfirmLock,
+  type ConfirmSnapshot,
+  type DriftChange,
+} from '@/lib/finance/confirmSafety';
+import { fetchFreshConfirmReads, snapshotFromFreshReads, withConfirmTimeout } from '@/lib/finance/fetchConfirm';
+import { liveSplit } from '@/lib/audit';
+import { useFeeEstimate } from './useNetworkFee';
 import {
   chainLabel,
   isChainId,
@@ -34,8 +54,20 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
   const [repayEpoch, setRepayEpoch] = useState(0);
   const [withdrawEpoch, setWithdrawEpoch] = useState(0);
   const [maxRepay, setMaxRepay] = useState(false);
+  const [maxWithdraw, setMaxWithdraw] = useState(false);
   const [partialPin, setPartialPin] = useState<bigint | undefined>();
-  const { send, isBusy, isAwaitingWallet, confirmed } = useSendTx();
+  const { send, isBusy, isAwaitingWallet, confirmed, hash, phase, receiptBlock, statusMessage, retryPositionRefresh, cancelPending } = useSendTx();
+  const [reviewAction, setReviewAction] = useState<PositionChangeAction | null>(null);
+  const [runAfterApproval, setRunAfterApproval] = useState(false);
+  const [confirmError, setConfirmError] = useState('');
+  const [driftChanges, setDriftChanges] = useState<DriftChange[]>([]);
+  const confirmLock = useRef<ConfirmLock>({ busy: false });
+  const reviewedSnapRef = useRef<ConfirmSnapshot | null>(null);
+  const lastFreshReadsRef = useRef<Awaited<ReturnType<typeof fetchFreshConfirmReads>> | null>(null);
+  const reviewRef = useRef<ReturnType<typeof buildProposedPositionChange> | null>(null);
+  const continueRef = useRef<(action: string) => void>(() => {});
+  const repayFee = useFeeEstimate(quote?.chainId, 'repay');
+  const withdrawFee = useFeeEstimate(quote?.chainId, 'withdraw');
   const { episodes, events, seedOpen } = useAudit(address);
 
   const safe = quote !== null && isVenueSafe(quote) && quote.action === 'borrow';
@@ -44,6 +76,7 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
   const gas = useGasCheck(quote?.chainId, GAS_UNITS.write);
   const marketChainId = quote?.chainId;
   const { snapshot, refetch: refetchPosition } = usePosition(safe ? quote : null, address, enabled);
+  const freshLoanBalance = useFreshTokenBalance(quote?.loanAddress, quote?.chainId, address);
 
   const { data: usdcBalance, isError: usdcError, refetch: refetchUsdc } = useReadContract({
     address: quote?.loanAddress,
@@ -93,7 +126,7 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
   const cappedDebt = debt;
 
   useEffect(() => {
-    if (!confirmed) return;
+    if (!confirmed || confirmed.refreshFailed) return;
     if (confirmed.action === 'repay') {
       setRepayAmount(null);
       setRepayEpoch((value) => value + 1);
@@ -104,10 +137,20 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
       setWithdrawAmount(null);
       setWithdrawEpoch((value) => value + 1);
     }
+    if (confirmed.action === 'repay' || confirmed.action === 'withdraw') {
+      setReviewAction(null);
+      setRunAfterApproval(false);
+    }
     void refetchUsdc();
     void refetchAllowance();
     void refetchPosition();
   }, [confirmed, refetchAllowance, refetchPosition, refetchUsdc]);
+
+  useEffect(() => {
+    if (!confirmed || !runAfterApproval) return;
+    continueRef.current(confirmed.action);
+  }, [confirmed, runAfterApproval]);
+
 
   useEffect(() => {
     if (!quote || snapshot.debt <= 0n) return;
@@ -118,7 +161,7 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
     return <p className="text-sm text-muted-foreground">Choose the borrow market you want to repay.</p>;
   }
 
-  const wallet = usdcBalance ?? 0n;
+  const wallet = freshLoanBalance ?? usdcBalance ?? 0n;
   const collateral = snapshot.collateral;
   const closingDebt = maxRepay || (repayAmount !== null && cappedDebt > 0n && repayAmount >= cappedDebt);
   const neededApproval = closingDebt ? cappedDebt : (repayAmount ?? 0n);
@@ -135,7 +178,49 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
   const hasDebt = snapshot.debt > 0n;
   const withdrawTooBig = withdrawAmount !== null && withdrawAmount > withdrawMax;
 
+  const split = liveSplit(episode, cappedDebt);
+  const protocolSafeFullRepay = Boolean(maxRepay && wallet > cappedDebt + cappedDebt / 10_000n);
+  const protocolSafeFullWithdraw = Boolean(maxWithdraw && !hasDebt && collateral > 0n);
+  const pendingReview = reviewAction
+    ? buildProposedPositionChange({
+      action: reviewAction,
+      venue: quote,
+      amount: reviewAction === 'REPAY' ? (repayAmount ?? 0n) : (protocolSafeFullWithdraw ? collateral : (withdrawAmount ?? 0n)),
+      currentCollateral: collateral,
+      currentDebt: cappedDebt,
+      spendableBalance: reviewAction === 'REPAY' ? wallet : collateral,
+      priceUsd: quote.priceUsd,
+      wrongNetwork: wrongChain,
+      approvalNeeded: reviewAction === 'REPAY' && (step === 'approve' || step === 'reset'),
+      resetNeeded: reviewAction === 'REPAY' && step === 'reset',
+      maxRepay: reviewAction === 'REPAY' ? maxRepay : false,
+      protocolSafeFullRepay: reviewAction === 'REPAY' ? protocolSafeFullRepay : false,
+      maxWithdraw: reviewAction === 'WITHDRAW_COLLATERAL' ? maxWithdraw : false,
+      protocolSafeFullWithdraw: reviewAction === 'WITHDRAW_COLLATERAL' ? protocolSafeFullWithdraw : false,
+      withdrawMax,
+      principalRemaining: split.principalRemaining,
+      interestRemaining: split.interestRemaining,
+      estimatedNetworkFeeUsd: (reviewAction === 'REPAY' ? repayFee.usd : withdrawFee.usd) ?? undefined,
+      fetchedAt: quote.freshness?.fetchedAt,
+      executionIntent: 'modify-current',
+    })
+    : null;
+  reviewRef.current = pendingReview;
+  if (pendingReview && reviewAction && !reviewedSnapRef.current) {
+    reviewedSnapRef.current = buildConfirmSnapshot({
+      action: reviewAction,
+      venue: quote,
+      change: pendingReview,
+      currentCollateral: collateral,
+      currentDebt: cappedDebt,
+      walletBalance: reviewAction === 'REPAY' ? wallet : collateral,
+      plannedAmount: reviewAction === 'REPAY' ? (repayAmount ?? 0n) : (withdrawAmount ?? 0n),
+      fetchedAt: quote.freshness?.fetchedAt ?? Date.now(),
+    });
+  }
+
   function ledger(amount: bigint, amountKind: 'loan' | 'asset' = 'loan', closing = false) {
+    const preview = reviewRef.current;
     return {
       wallet: address!,
       venue: quote!,
@@ -145,7 +230,13 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
       debt: snapshot.debt,
       collateral: snapshot.collateral,
       healthFactor: snapshot.healthFactor,
+      shares: snapshot.extra?.shares,
       closing,
+      previewCurrent: preview ? serializePositionSnapshot(preview.current) : undefined,
+      previewProjected: preview ? serializePositionSnapshot(preview.projected) : undefined,
+      previewAt: preview ? Date.now() : undefined,
+      positionVenue: quote ?? undefined,
+      user: address,
     };
   }
 
@@ -155,16 +246,98 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
 
   async function repay() {
     if (!address || !repayAmount || repayAmount <= 0n) return;
-    const full = (maxRepay || repayAmount >= cappedDebt) && wallet > cappedDebt + cappedDebt / 10_000n;
+    const change = reviewRef.current;
+    if (change && !canRequestWallet(change)) return;
+    const full = protocolSafeFullRepay;
     const call = adapterFor(quote!).buildRepay(quote!, address, repayAmount, full, { shares });
     if (call) await send('repay', call, ledger(repayAmount, 'loan', full));
   }
 
   async function withdraw() {
     if (!address || !withdrawAmount || withdrawAmount <= 0n || withdrawAmount > withdrawMax) return;
+    const change = reviewRef.current;
+    if (change && !canRequestWallet(change)) return;
     const call = adapterFor(quote!).buildWithdraw(quote!, address, withdrawAmount, 'borrow', { shares });
-    if (call) await send('withdraw', call, ledger(withdrawAmount, 'asset'));
+    if (call) await send('withdraw', call, ledger(withdrawAmount, 'asset', maxWithdraw || (collateral > 0n && withdrawAmount >= collateral)));
   }
+
+  async function executeReviewedAction() {
+    if (reviewAction === 'REPAY') await repay();
+    if (reviewAction === 'WITHDRAW_COLLATERAL') await withdraw();
+  }
+
+  async function confirmReview() {
+    const change = reviewRef.current;
+    if (!change || !quote || !address || !reviewAction || !canRequestWallet(change)) return;
+    setConfirmError('');
+    const reviewed = reviewedSnapRef.current ?? buildConfirmSnapshot({
+      action: reviewAction,
+      venue: quote,
+      change,
+      currentCollateral: collateral,
+      currentDebt: cappedDebt,
+      walletBalance: reviewAction === 'REPAY' ? wallet : collateral,
+      plannedAmount: reviewAction === 'REPAY' ? (repayAmount ?? 0n) : (withdrawAmount ?? 0n),
+      fetchedAt: quote.freshness?.fetchedAt ?? Date.now(),
+    });
+    const decision = await runConfirmGuard({
+      reviewed,
+      lock: confirmLock.current,
+      loadFresh: async () => {
+        const reads = await withConfirmTimeout(fetchFreshConfirmReads({
+          venue: quote,
+          user: address,
+          action: reviewAction,
+        }));
+        lastFreshReadsRef.current = reads;
+        return snapshotFromFreshReads(reads, {
+          action: reviewAction,
+          venue: reads.venue,
+          amount: reviewAction === 'REPAY' ? (repayAmount ?? 0n) : (protocolSafeFullWithdraw ? reads.position.collateral : (withdrawAmount ?? 0n)),
+          currentCollateral: reads.position.collateral,
+          currentDebt: reads.position.debt,
+          spendableBalance: reviewAction === 'REPAY' ? reads.walletBalance : reads.position.collateral,
+          priceUsd: reads.venue.priceUsd,
+          wrongNetwork: isConnected && chain?.id !== reads.venue.chainId,
+          maxRepay: reviewAction === 'REPAY' ? maxRepay : false,
+          protocolSafeFullRepay: reviewAction === 'REPAY' ? protocolSafeFullRepay : false,
+          maxWithdraw: reviewAction === 'WITHDRAW_COLLATERAL' ? maxWithdraw : false,
+          protocolSafeFullWithdraw: reviewAction === 'WITHDRAW_COLLATERAL' && !reads.position.debt,
+          withdrawMax: reads.position.withdrawMax,
+          fetchedAt: reads.fetchedAt,
+        }).snapshot;
+      },
+    });
+    if (decision.status === 'busy') return;
+    if (decision.status === 'failed') {
+      setConfirmError(decision.message || CONFIRM_FAIL_MESSAGE);
+      return;
+    }
+    if (decision.status === 'rereview') {
+      reviewedSnapRef.current = decision.fresh;
+      setDriftChanges(decision.changes);
+      setConfirmError(CONFIRM_DRIFT_MESSAGE);
+      return;
+    }
+    if (!decision.invokeWallet) return;
+    const first = change.steps[0]?.kind;
+    setRunAfterApproval(first !== 'action');
+    requestWalletAfterConfirm(decision, () => {
+      void (async () => {
+        if (first === 'reset') await approve(0n);
+        else if (first === 'approve') await approve(approveAmount);
+        else await executeReviewedAction();
+      })();
+    });
+  }
+
+  continueRef.current = (action) => {
+    if (action === 'reset') {
+      void approve(approveAmount);
+      return;
+    }
+    if (action === 'approve') void executeReviewedAction();
+  };
 
   return (
     <div className="space-y-4">
@@ -212,7 +385,7 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
             balance={cappedDebt}
             balanceLabel="Debt"
             percents={[25, 50, 75, 100]}
-            percentLabel={(percent) => (percent === 100 ? 'Clear debt' : `${percent}%`)}
+            percentLabel={(percent) => (percent === 100 ? 'Full repayment' : `${percent}%`)}
             epoch={repayEpoch}
             pinned={maxRepay ? undefined : partialPin}
             invalid={repayTooBig}
@@ -258,12 +431,34 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
             <GasNotice chainId={quote.chainId} symbol={'USDC'} neededEth={gas.neededEth} balanceEth={gas.balanceEth} />
           ) : repayTooBig ? (
             <Button className="h-12 w-full" disabled>Not enough USDC</Button>
-          ) : step === 'approve' ? (
-            <Button className="h-12 w-full bg-indigo-600 text-white" disabled={isBusy || neededApproval === 0n} onClick={() => void approve(approveAmount)}>{isAwaitingWallet ? 'Confirm in wallet…' : isBusy ? 'Confirming…' : 'Approve USDC'}</Button>
           ) : (
-            <Button className="h-12 w-full bg-blue-600 text-white" disabled={isBusy || cappedDebt === 0n || !repayAmount || repayAmount <= 0n} onClick={() => void repay()}>
-              {isAwaitingWallet ? 'Confirm in wallet…' : isBusy ? 'Confirming…' : maxRepay ? 'Repay full debt' : 'Repay'}
+            <Button className="h-12 w-full bg-blue-600 text-white" disabled={isBusy || cappedDebt === 0n || !repayAmount || repayAmount <= 0n} onClick={() => { reviewedSnapRef.current = null; setConfirmError(''); setDriftChanges([]); setReviewAction('REPAY'); }}>
+              {isAwaitingWallet ? 'Confirm in wallet…' : isBusy ? 'Confirming…' : 'Review repayment'}
             </Button>
+          )}
+          {pendingReview && reviewAction === 'REPAY' && (
+            <PositionChangeReview
+              change={pendingReview}
+              loanDecimals={quote.loanDecimals}
+              assetDecimals={quote.assetDecimals}
+              busy={isBusy || confirmLock.current.busy}
+              awaitingWallet={isAwaitingWallet}
+              notice={confirmError || undefined}
+              driftChanges={driftChanges}
+              statusMessage={statusMessage}
+              txHash={hash}
+              receiptBlock={receiptBlock}
+              onRetryRefresh={phase === 'refresh_failed' ? () => void retryPositionRefresh() : undefined}
+              onCancel={() => {
+                cancelPending();
+                setReviewAction(null);
+                setRunAfterApproval(false);
+                setConfirmError('');
+                setDriftChanges([]);
+                reviewedSnapRef.current = null;
+              }}
+              onConfirm={() => void confirmReview()}
+            />
           )}
           {isConnected && (
             <FeeBreakdown
@@ -284,20 +479,51 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
             decimals={quote.assetDecimals}
             priceUsd={quote.priceUsd}
             balance={withdrawMax}
-            balanceLabel={hasDebt ? 'Safe to withdraw' : 'Supplied'}
+            balanceLabel={hasDebt ? 'Safe to withdraw' : 'Full supplied balance'}
+            percents={[25, 50, 75, 100]}
+            percentLabel={(percent) => (percent === 100 && !hasDebt ? 'Full supplied balance' : `${percent}%`)}
             epoch={withdrawEpoch}
             invalid={withdrawTooBig}
             disabled={withdrawMax === 0n}
             onAmount={setWithdrawAmount}
+            onEdit={() => setMaxWithdraw(false)}
+            onPercent={(percent, slice) => {
+              setWithdrawAmount(slice);
+              setMaxWithdraw(percent === 100 && !hasDebt);
+            }}
           />
           {hasDebt && collateral > 0n && (
             <p className="text-xs leading-relaxed text-muted-foreground">
               {formatToken(collateral, quote.assetDecimals)} {quote.assetSymbol} is supplied. While debt is open, the app lets you withdraw only what keeps the loan inside 90% of the pool&apos;s borrowing limit. Repay the debt to withdraw everything.
             </p>
           )}
-          <Button className="h-12 w-full bg-indigo-600 text-white" disabled={isBusy || wrongChain || !isConnected || withdrawMax === 0n || !withdrawAmount || withdrawAmount <= 0n || withdrawTooBig} onClick={() => void withdraw()}>
-            {isAwaitingWallet ? 'Confirm in wallet…' : isBusy ? 'Confirming…' : withdrawMax === 0n && collateral > 0n ? 'Repay debt to withdraw' : `Withdraw ${quote.assetSymbol}`}
+          <Button className="h-12 w-full bg-indigo-600 text-white" disabled={isBusy || wrongChain || !isConnected || withdrawMax === 0n || !withdrawAmount || withdrawAmount <= 0n || withdrawTooBig} onClick={() => { reviewedSnapRef.current = null; setConfirmError(''); setDriftChanges([]); setReviewAction('WITHDRAW_COLLATERAL'); }}>
+            {isAwaitingWallet ? 'Confirm in wallet…' : isBusy ? 'Confirming…' : withdrawMax === 0n && collateral > 0n ? 'Repay debt to withdraw' : `Review withdrawal`}
           </Button>
+          {pendingReview && reviewAction === 'WITHDRAW_COLLATERAL' && (
+            <PositionChangeReview
+              change={pendingReview}
+              loanDecimals={quote.loanDecimals}
+              assetDecimals={quote.assetDecimals}
+              busy={isBusy || confirmLock.current.busy}
+              awaitingWallet={isAwaitingWallet}
+              notice={confirmError || undefined}
+              driftChanges={driftChanges}
+              statusMessage={statusMessage}
+              txHash={hash}
+              receiptBlock={receiptBlock}
+              onRetryRefresh={phase === 'refresh_failed' ? () => void retryPositionRefresh() : undefined}
+              onCancel={() => {
+                cancelPending();
+                setReviewAction(null);
+                setRunAfterApproval(false);
+                setConfirmError('');
+                setDriftChanges([]);
+                reviewedSnapRef.current = null;
+              }}
+              onConfirm={() => void confirmReview()}
+            />
+          )}
         </CardContent>
       </Card>
     </div>

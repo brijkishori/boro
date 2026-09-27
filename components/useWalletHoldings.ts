@@ -6,6 +6,7 @@ import { erc20Abi } from '@/lib/abi';
 import { formatToken, formatUsdExact, tokenAmountUsd } from '@/lib/amount';
 import { HOLDING_SPECS, type HoldingSpec } from '@/lib/holdings';
 import { chainLabel, type ChainId } from '@/lib/protocol';
+import { BALANCE_EVENT, POSITION_EVENT } from '@/lib/finance/positionCache';
 import { publicClient } from '@/lib/rpc';
 import { useUsdPrices } from '@/components/useUsdPrices';
 
@@ -71,9 +72,13 @@ export function useWalletHoldings() {
     const timer = window.setInterval(() => void load(), 8_000);
     const onTx = () => void load();
     window.addEventListener('boro:tx', onTx);
+    window.addEventListener(BALANCE_EVENT, onTx);
+    window.addEventListener(POSITION_EVENT, onTx);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener('boro:tx', onTx);
+      window.removeEventListener(BALANCE_EVENT, onTx);
+      window.removeEventListener(POSITION_EVENT, onTx);
     };
   }, [load]);
 
