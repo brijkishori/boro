@@ -1,6 +1,9 @@
 import { formatUnits, type Address } from 'viem';
+import { auditStoreKey, episodeKey, sanitizeDocument } from '@/lib/audit';
 import { alertMarketKey, deliveryKind, evaluateEnabledPlan, monthlyStatementLines, type AlertEvent, type AlertRecommendationInput } from '@/lib/finance/recommendedAlerts';
+import { digestLines, isOpenDebt, previousUtcMonth, projectedInterestCost, summarizeEpisodePeriod, type DigestPosition } from '@/lib/finance/periodInterest';
 import { historyCoverage } from '@/lib/finance/history';
+import { loanRateHistory } from '@/lib/finance/openingApr';
 import { availableToBorrowUsd, chainLabel, protocolLabel, protocolMarketId, type Venue } from '@/lib/protocol';
 import { type RatePoint } from '@/lib/rateHistory';
 import { storeJson } from '@/lib/store';
@@ -147,14 +150,46 @@ function recommendedCopy(address: string, event: AlertEvent): AlertCopy {
   return { ...copy, subject };
 }
 
+function digestPosition(
+  name: string,
+  venue: Venue,
+  snapshot: { debt: bigint; healthFactor: number | null; ltv: number; liquidationPrice: number },
+  debtUsd: number,
+  summary: ReturnType<typeof summarizeEpisodePeriod>,
+  openingApr: number | null,
+): DigestPosition {
+  return {
+    name,
+    debtUsd,
+    principalRemainingUsd: summary.principalRemainingUsd,
+    accruedUnpaidUsd: summary.accruedUnpaidUsd,
+    apr: typeof venue.borrowApr === 'number' && Number.isFinite(venue.borrowApr) ? venue.borrowApr : null,
+    openingApr,
+    ltv: snapshot.ltv,
+    healthFactor: snapshot.healthFactor,
+    liquidationPriceUsd: snapshot.liquidationPrice > 0 ? snapshot.liquidationPrice : null,
+    actualUsd: summary.actual.usd,
+    actualStatus: summary.actual.status,
+    interestPaidUsd: summary.interestPaidUsd,
+    principalRepaidUsd: summary.principalRepaidUsd,
+    additionalBorrowingUsd: summary.additionalBorrowingUsd,
+    networkFeesUsd: summary.networkFeesUsd,
+  };
+}
+
 async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: boolean, contexts: Map<string, VenueRateContext>) {
   const messages: AlertCopy[] = [];
-  const digestRows: string[] = [];
   const statementRows: string[] = [];
-  let weeklyInterestUsd = 0;
-  let monthlyInterestUsd = 0;
+  const weeklyPositions: DigestPosition[] = [];
+  const monthlyPositions: DigestPosition[] = [];
+  const suppliedNames: string[] = [];
+  let projectedNext7Usd = 0;
+  let measuredWeekUsd = 0;
   let totalDebtUsd = 0;
-  let hasPosition = false;
+  const now = Date.now();
+  const week = { periodStart: now - 7 * 86_400_000, periodEnd: now };
+  const month = previousUtcMonth(now);
+  const ledgerEvents = sanitizeDocument(await storeJson(auditStoreKey(subscriber.address))).events;
   const borrowVenues = venues.filter((venue) => venue.action === 'borrow');
 
   for (const venue of borrowVenues) {
@@ -177,15 +212,39 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
         closedPlan.states = paused.states;
       }
       if (!snapshot || (snapshot.collateral === 0n && snapshot.debt === 0n)) continue;
-      hasPosition = true;
       const facts = loanFacts(venue, snapshot);
       const debtUsd = Number(formatUnits(snapshot.debt, venue.loanDecimals));
-      const week = Math.max(0, debtUsd * venue.borrowApr / 52);
-      const month = Math.max(0, debtUsd * venue.borrowApr / 12);
-      weeklyInterestUsd += week;
-      monthlyInterestUsd += month;
-      totalDebtUsd += debtUsd;
-      digestRows.push(`${facts.protocol} ${facts.asset} on ${facts.chain}: debt ${facts.debtUsd}, HF ${facts.healthFactor}, liq ${facts.liquidationPrice}, APR ${facts.borrowApr}, interest ${facts.interestMonth}/mo`);
+      const openDebt = isOpenDebt(debtUsd);
+      const positionName = `${facts.protocol} · ${facts.asset} · ${facts.chain}`;
+      let monthSummary: ReturnType<typeof summarizeEpisodePeriod> | null = null;
+      if (openDebt) {
+        const key = episodeKey(subscriber.address, venue);
+        const weekSummary = summarizeEpisodePeriod({
+          events: ledgerEvents,
+          episodeKey: key,
+          periodStart: week.periodStart,
+          periodEnd: week.periodEnd,
+          endingDebt: snapshot.debt,
+          decimals: venue.loanDecimals,
+        });
+        monthSummary = summarizeEpisodePeriod({
+          events: ledgerEvents,
+          episodeKey: key,
+          periodStart: month.periodStart,
+          periodEnd: month.periodEnd,
+          endingDebt: snapshot.debt,
+          decimals: venue.loanDecimals,
+        });
+        const projected = projectedInterestCost(debtUsd, venue.borrowApr);
+        projectedNext7Usd += projected.next7Days ?? 0;
+        if (weekSummary.actual.usd !== null) measuredWeekUsd += weekSummary.actual.usd;
+        totalDebtUsd += debtUsd;
+        const openingApr = loanRateHistory(ledgerEvents, key).opening?.normalizedBorrowApr ?? null;
+        weeklyPositions.push(digestPosition(positionName, venue, snapshot, debtUsd, weekSummary, openingApr));
+        monthlyPositions.push(digestPosition(positionName, venue, snapshot, debtUsd, monthSummary, openingApr));
+      } else if (snapshot.collateral > 0n) {
+        suppliedNames.push(positionName);
+      }
       const drop = snapshot.liquidationPrice > 0 && venue.priceUsd > 0
         ? (1 - snapshot.liquidationPrice / venue.priceUsd) * 100
         : 100;
@@ -210,8 +269,17 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
           if (event.alertType === 'monthly-statement') continue;
           messages.push(recommendedCopy(subscriber.address, event));
         }
-        if (plan.rules.some((rule) => rule.enabled && rule.id === 'monthly-statement')) {
-          statementRows.push(...monthlyStatementLines(recommendationInput(venue, snapshot, subscriber.address, false, contexts.get(venue.id), plan.benchmarkApr)));
+        if (openDebt && monthSummary && plan.rules.some((rule) => rule.enabled && rule.id === 'monthly-statement')) {
+          statementRows.push(...monthlyStatementLines(
+            recommendationInput(venue, snapshot, subscriber.address, false, contexts.get(venue.id), plan.benchmarkApr),
+            {
+              startingDebtUsd: null,
+              principalRepaidUsd: monthSummary.principalRepaidUsd,
+              interestAccruedUsd: monthSummary.actual.usd,
+              interestPaidUsd: monthSummary.interestPaidUsd,
+              networkFeesUsd: monthSummary.networkFeesUsd,
+            },
+          ));
         }
       }
 
@@ -265,21 +333,19 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
 
   const today = new Date().toISOString().slice(0, 10);
   const local = localParts(subscriber.rules.timeZone);
-  if (subscriber.rules.weekly && subscriber.lastWeekly !== today && local.weekday === 1 && morningWindow(local.hour) && weeklyInterestUsd >= 1) {
-    messages.push(weeklyAlert(subscriber.address, formatUsdExact(weeklyInterestUsd), [
-      `Open loans: ${digestRows.length}`,
+  const openDebtCount = weeklyPositions.length;
+  const weekWorthSending = projectedNext7Usd >= 1 || measuredWeekUsd >= 1;
+  if (subscriber.rules.weekly && subscriber.lastWeekly !== today && local.weekday === 1 && morningWindow(local.hour) && openDebtCount > 0 && weekWorthSending) {
+    messages.push(weeklyAlert(subscriber.address, [
       `Total debt: ${formatUsdExact(totalDebtUsd)}`,
-      `Interest this week: ${formatUsdExact(weeklyInterestUsd)}`,
-      ...digestRows,
+      ...digestLines('week', weeklyPositions, suppliedNames),
     ]));
     subscriber.lastWeekly = today;
   }
-  if (subscriber.rules.monthly && subscriber.lastMonthly !== today && local.day === 1 && morningWindow(local.hour) && hasPosition) {
+  if (subscriber.rules.monthly && subscriber.lastMonthly !== today && local.day === 1 && morningWindow(local.hour) && openDebtCount > 0) {
     messages.push(monthlyAlert(subscriber.address, [
-      `Open loans: ${digestRows.length}`,
       `Total debt: ${formatUsdExact(totalDebtUsd)}`,
-      `Interest this month at current rates: ${formatUsdExact(monthlyInterestUsd)}`,
-      ...digestRows,
+      ...digestLines('month', monthlyPositions, suppliedNames),
       ...statementRows,
     ]));
     subscriber.lastMonthly = today;

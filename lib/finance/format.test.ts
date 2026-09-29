@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  formatAccountingAmount,
+  formatBps,
   formatCushionOrNone,
+  formatMoneyCompact,
+  formatMoneyExact,
   formatHealthFactor,
   formatHealthFactorOrNone,
   formatLiquidationOrNone,
@@ -65,6 +69,19 @@ test('zero-debt UI uses N/A labels instead of 0% or Infinity', () => {
   assert.equal(formatLiquidationOrNone(0, 0), NO_LIQUIDATION_LABEL);
   assert.equal(formatCushionOrNone(1, 0), NO_LIQUIDATION_LABEL);
   assert.equal(formatLtvOrNone(0.189947, 16.1), '18.99%');
+});
+
+test('accounting money keeps two decimals and compact money is marked as abbreviated', () => {
+  assert.equal(formatMoneyExact(21.1, 'USDC'), '21.10 USDC');
+  assert.equal(formatAccountingAmount(21_100_000n, 6, 'USDC'), '21.10 USDC');
+  assert.equal(formatAccountingAmount(21_078_900_000n, 6, 'USDC'), '21,078.90 USDC');
+  assert.equal(formatMoneyExact(21_100, 'USDC'), '21,100.00 USDC');
+  assert.equal(formatAccountingAmount(21_100_000n + 21_078_900_000n - 0n, 6, 'USDC'), '21,100.00 USDC');
+  assert.equal(formatMoneyCompact(21_100), '$21.1K');
+  assert.equal(formatMoneyCompact(84_000), '$84.0K');
+  assert.equal(formatMoneyCompact(1_020), '$1.02K');
+  assert.equal(formatBps(14), '14 bps');
+  assert.notEqual(formatMoneyExact(21_100, 'USDC'), formatMoneyCompact(21_100));
 });
 
 test('compact USDC can hide extra dust while precise display keeps it', () => {

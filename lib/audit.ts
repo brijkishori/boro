@@ -21,6 +21,11 @@ export type AuditEvent = {
   amountUsd: number | null;
   decimals: number;
   borrowApr: number | null;
+  /** Protocol rate captured with this event. Normalized comparison uses borrowApr. */
+  sourceRate?: number | null;
+  sourceRateType?: string | null;
+  blockNumber?: string | null;
+  marketId?: string;
   supplyApr: number | null;
   priceUsd: number | null;
   healthFactor: number | null;
@@ -89,6 +94,8 @@ export type AuditVenue = Pick<
   | 'assetDecimals'
   | 'loanDecimals'
   | 'borrowApr'
+  | 'borrowRate'
+  | 'freshness'
   | 'supplyApr'
   | 'priceUsd'
 >;
@@ -112,6 +119,7 @@ export type AuditTxInput = {
   previewCurrent?: string;
   previewProjected?: string;
   previewAt?: number;
+  blockNumber?: bigint | number;
 };
 
 const LOCAL_PREFIX = 'boro:audit:v1:';
@@ -450,6 +458,12 @@ export function buildAuditEvent(input: AuditTxInput): AuditEvent {
     amountUsd: input.amountUsd ?? null,
     decimals,
     borrowApr: input.venue.borrowApr,
+    sourceRate: input.venue.borrowRate?.sourceValue ?? null,
+    sourceRateType: input.venue.borrowRate?.sourceRateType ?? null,
+    blockNumber: input.blockNumber === undefined
+      ? (input.venue.freshness?.blockNumber === undefined ? null : String(input.venue.freshness.blockNumber))
+      : String(input.blockNumber),
+    marketId: input.venue.id,
     supplyApr: input.venue.supplyApr,
     priceUsd: input.venue.priceUsd,
     healthFactor: input.healthFactor ?? null,

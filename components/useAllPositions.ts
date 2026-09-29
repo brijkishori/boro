@@ -12,6 +12,8 @@ import type { Venue } from '@/lib/protocol';
 export type OpenPosition = {
   venue: Venue;
   snapshot: PositionSnapshot;
+  /** Time of the successful on-chain position read. Not the market-quote timestamp. */
+  observedAt?: number | null;
 };
 
 const lastByAddress = new Map<string, OpenPosition[]>();
@@ -77,7 +79,7 @@ export function useAllPositions(venues: Venue[], address: Address | undefined) {
 
   const cacheEpoch = useSyncExternalStore(subscribeFreshPosition, positionCacheVersion, () => 0);
   const refreshedEpoch = useRef(0);
-  const { data, isLoading, isFetching, refetch } = useReadContracts({
+  const { data, isLoading, isFetching, refetch, dataUpdatedAt } = useReadContracts({
     contracts: calls.map((call) => ({
       address: call.address,
       abi: call.abi,
@@ -114,7 +116,7 @@ export function useAllPositions(venues: Venue[], address: Address | undefined) {
       if (!data || slice.length !== reads.length || slice.some((row) => row.status !== 'success')) {
         complete = false;
         const snapshot = overlayCachedPosition(venue, heldAddress, kept?.snapshot ?? emptyPosition());
-        if (isOpenPosition(venue, snapshot)) open.push({ venue, snapshot });
+        if (isOpenPosition(venue, snapshot)) open.push({ venue, snapshot, observedAt: kept?.observedAt ?? null });
         continue;
       }
       const snapshot = overlayCachedPosition(
@@ -122,21 +124,21 @@ export function useAllPositions(venues: Venue[], address: Address | undefined) {
         heldAddress,
         adapterFor(venue).parsePosition(venue, slice.map((row) => row.result)),
       );
-      if (isOpenPosition(venue, snapshot)) open.push({ venue, snapshot });
+      if (isOpenPosition(venue, snapshot)) open.push({ venue, snapshot, observedAt: dataUpdatedAt > 0 ? dataUpdatedAt : null });
     }
     if (data && index !== data.length) complete = false;
     if (!data || cacheEpoch > 0) {
       for (const venue of unique) {
         if (open.some((item) => venueKey(item.venue) === venueKey(venue))) continue;
         const cached = readFreshPosition(venue, heldAddress);
-        if (cached && isOpenPosition(venue, cached.snapshot)) open.push({ venue, snapshot: cached.snapshot });
+        if (cached && isOpenPosition(venue, cached.snapshot)) open.push({ venue, snapshot: cached.snapshot, observedAt: cached.at });
       }
     }
 
     if (complete && cacheKey) lastByAddress.set(cacheKey, open);
     if (!complete && open.length === 0 && previous.length > 0) return { positions: previous, complete: false };
     return { positions: open.length > 0 || complete ? open : previous, complete };
-  }, [cacheEpoch, data, heldAddress, unique, stableAddress, stableUnique]);
+  }, [cacheEpoch, data, dataUpdatedAt, heldAddress, unique, stableAddress, stableUnique]);
 
   return { positions: parsed.positions, isLoading: isLoading && parsed.positions.length === 0, isFetching, refetch };
 }

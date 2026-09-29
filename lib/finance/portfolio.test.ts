@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseUnits } from 'viem';
-import { activeDebtPositions, portfolioDebtSummary, weightedBorrowApr, zeroDebtMarkets } from './portfolio';
+import { activeDebtPositions, portfolioAprLabel, portfolioDebtSummary, weightedBorrowApr, zeroDebtMarkets } from './portfolio';
 import type { Venue } from '../protocol';
 import type { PositionSnapshot } from '../adapters';
 
@@ -66,6 +66,15 @@ test('zero-debt markets are excluded from active loan aggregation', () => {
   assert.equal(summary.weightedBorrowApr, 0.05);
   assert.ok(summary.estimatedMonthlyInterest && Math.abs(summary.estimatedMonthlyInterest - 21_100 * 0.05 / 12) < 1e-8);
   assert.ok(summary.highestLtv && Math.abs(summary.highestLtv - 0.25) < 1e-10);
+});
+
+test('G. one active loan labels the summary APR as current', () => {
+  assert.equal(portfolioAprLabel(1), 'Current APR');
+});
+
+test('H. multiple active loans label the summary APR as weighted', () => {
+  assert.equal(portfolioAprLabel(2), 'Weighted current APR');
+  assert.equal(portfolioAprLabel(4), 'Weighted current APR');
 });
 
 test('portfolio summary is empty without open debt', () => {

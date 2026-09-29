@@ -457,7 +457,7 @@ export function monthlyStatementLines(input: AlertRecommendationInput, ledger?: 
   lines.push(
     ledger.startingDebtUsd === null || ledger.startingDebtUsd === undefined ? 'Starting debt not recorded' : `Starting debt ${usdText(ledger.startingDebtUsd)}`,
     ledger.principalRepaidUsd === null || ledger.principalRepaidUsd === undefined ? 'Principal repaid not recorded' : `Principal repaid ${usdText(ledger.principalRepaidUsd)}`,
-    ledger.interestAccruedUsd === null || ledger.interestAccruedUsd === undefined ? 'Interest accrued not recorded' : `Interest accrued ${usdText(ledger.interestAccruedUsd)}`,
+    ledger.interestAccruedUsd === null || ledger.interestAccruedUsd === undefined ? 'Actual monthly interest unavailable' : `Interest accrued ${usdText(ledger.interestAccruedUsd)}`,
     ledger.interestPaidUsd === null || ledger.interestPaidUsd === undefined ? 'Interest paid not recorded' : `Interest paid ${usdText(ledger.interestPaidUsd)}`,
     ledger.networkFeesUsd === null || ledger.networkFeesUsd === undefined ? 'Network fees not recorded' : `Network fees ${usdText(ledger.networkFeesUsd)}`,
   );

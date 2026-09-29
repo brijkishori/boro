@@ -4,6 +4,7 @@ import { type AlertKind, ALERT_SUBJECTS } from '@/lib/alertKinds';
 import { alertToken, appUrl, unsubscribeUrl } from '@/lib/alerts';
 import { formatApr, formatToken, formatUsd, formatUsdExact } from '@/lib/amount';
 import { formatHealthFactor, formatLtv, formatPercent } from '@/lib/finance/format';
+import { digestLines, liveLikeOpenLoan, summarizeEpisodePeriod, type DigestPosition } from '@/lib/finance/periodInterest';
 import { projectedInterest } from '@/lib/opportunities';
 import { chainLabel, protocolLabel, type Venue } from '@/lib/protocol';
 
@@ -73,8 +74,8 @@ function positionLines(facts: LoanFacts) {
     `BTC price now: ${facts.btcPrice}`,
     `Liquidation price: ${facts.liquidationPrice}`,
     `Room to liquidation: ${facts.dropPct}`,
-    `Borrow APR: ${facts.borrowApr}`,
-    `Interest: ${facts.interestMonth}/mo · ${facts.interestYear}/yr`,
+    `Current APR: ${facts.borrowApr}`,
+    `Estimated interest at current balance and APR: ${facts.interestMonth}/mo · ${facts.interestYear}/yr`,
   ];
 }
 
@@ -150,15 +151,15 @@ export function thresholdAlert(address: string, facts: LoanFacts, grown: string,
   ], positionLines(facts));
 }
 
-export function weeklyAlert(address: string, weekly: string, rows: string[]) {
+export function weeklyAlert(address: string, rows: string[]) {
   return renderAlertEmail('weekly', address, [
-    `About ${weekly} of interest accrued this week across your open loans.`,
+    'Weekly loan digest. Interest accrued this week comes from the loan ledger. A figure at the current balance and APR is an estimate of future interest, not interest that already accrued.',
   ], rows);
 }
 
 export function monthlyAlert(address: string, rows: string[]) {
   return renderAlertEmail('monthly', address, [
-    'Monthly statement for your open SimpleBTC loans.',
+    'Monthly loan statement. Interest accrued this month comes from the loan ledger. A figure at the current balance and APR is an estimate of future interest, not interest that already accrued or was paid.',
   ], rows);
 }
 
@@ -191,6 +192,39 @@ function sampleFacts(): LoanFacts {
   };
 }
 
+function accountingDigest(period: 'week' | 'month') {
+  const fixture = liveLikeOpenLoan();
+  const periodStart = period === 'week' ? fixture.now - 7 * 86_400_000 : fixture.openedAt;
+  const summary = period === 'week'
+    ? fixture.summary
+    : summarizeEpisodePeriod({
+      events: fixture.events,
+      episodeKey: fixture.episodeKey,
+      periodStart,
+      periodEnd: fixture.now,
+      endingDebt: fixture.endingDebt,
+      decimals: 6,
+    });
+  const debtUsd = summary.periodEndSnapshot?.totalDebtUsd ?? 0;
+  const row: DigestPosition = {
+    name: 'Morpho Blue · cbBTC · Base',
+    debtUsd,
+    principalRemainingUsd: summary.principalRemainingUsd,
+    accruedUnpaidUsd: summary.accruedUnpaidUsd,
+    apr: fixture.apr,
+    ltv: null,
+    healthFactor: null,
+    liquidationPriceUsd: null,
+    actualUsd: summary.actual.usd,
+    actualStatus: summary.actual.status,
+    interestPaidUsd: summary.interestPaidUsd,
+    principalRepaidUsd: summary.principalRepaidUsd,
+    additionalBorrowingUsd: summary.additionalBorrowingUsd,
+    networkFeesUsd: summary.networkFeesUsd,
+  };
+  return digestLines(period, [row], []);
+}
+
 export function sampleAlertByKind(address: string, kind: AlertKind) {
   return sampleAlertEmails(address).find((sample) => sample.kind === kind) ?? null;
 }
@@ -211,7 +245,7 @@ export function sampleAlertEmails(address: string): AlertCopy[] {
       monthly: formatUsdExact(0.08),
     }),
     thresholdAlert(address, facts, '$5.10', '$94.90'),
-    weeklyAlert(address, '$1.08', [...positionLines(facts), 'Interest this week: $1.08']),
-    monthlyAlert(address, [...positionLines(facts), 'Interest this month: $0.43', 'Interest this year at the current rate: $5.11']),
+    weeklyAlert(address, accountingDigest('week')),
+    monthlyAlert(address, accountingDigest('month')),
   ];
 }

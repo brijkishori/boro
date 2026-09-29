@@ -40,6 +40,10 @@ export function zeroDebtMarkets(positions: OpenDebtPosition[]): OpenDebtPosition
   return positions.filter((item) => item.venue.action === 'borrow' && item.snapshot.debt === 0n && item.snapshot.collateral > 0n);
 }
 
+export function portfolioAprLabel(openDebtCount: number) {
+  return openDebtCount === 1 ? 'Current APR' : 'Weighted current APR';
+}
+
 export function weightedBorrowApr(positions: OpenDebtPosition[]): number | null {
   let weight = 0;
   let debt = 0;

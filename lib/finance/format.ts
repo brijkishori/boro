@@ -74,6 +74,51 @@ export function formatRate(apr: number): string {
   return formatPercent(apr, 2);
 }
 
+/** Accounting display. Two decimal places and thousands separators. Does not change the stored value. */
+export function formatMoneyExact(value: number, symbol?: string): string {
+  if (!finite(value)) return '—';
+  const text = value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return symbol ? `${text} ${symbol}` : text;
+}
+
+/** Abbreviated summary display. The K/M suffix marks that the figure is shortened. */
+export function formatMoneyCompact(value: number): string {
+  if (!finite(value)) return '—';
+  const sign = value < 0 ? '-' : '';
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`;
+  if (abs >= 10_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(2)}K`;
+  return formatUsdAdaptive(abs, 'precise').replace(/^/, sign === '-' ? '-' : '');
+}
+
+/** Magnitude only. Direction and words stay on the shared APR status. */
+export function formatBps(bps: number): string {
+  if (!finite(bps)) return '—';
+  const abs = Math.abs(bps);
+  const text = abs >= 9.95 ? abs.toFixed(0) : abs.toFixed(1).replace(/\.0$/, '');
+  return `${text} bps`;
+}
+
+/** Stablecoin accounting from token units. Rounds only the displayed cents. */
+export function formatAccountingAmount(amount: bigint, decimals: number, symbol: string): string {
+  if (decimals < 0 || decimals > 18) return '—';
+  const negative = amount < 0n;
+  const abs = negative ? -amount : amount;
+  const scale = 10n ** BigInt(decimals);
+  const whole = abs / scale;
+  const fraction = abs % scale;
+  const centsScale = decimals >= 2 ? 10n ** BigInt(decimals - 2) : 1n;
+  let cents = decimals >= 2 ? (fraction + centsScale / 2n) / centsScale : fraction * (10n ** BigInt(2 - decimals));
+  let shownWhole = whole;
+  if (cents >= 100n) {
+    shownWhole += 1n;
+    cents -= 100n;
+  }
+  const grouped = shownWhole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${negative ? '-' : ''}${grouped}.${cents.toString().padStart(2, '0')} ${symbol}`;
+}
+
 export function formatSpreadPoints(spread: number): string {
   if (!finite(spread)) return '—';
   const points = spread * 100;
@@ -121,7 +166,7 @@ export function formatGasFee(usd: number | null | undefined): string {
 export function formatTokenAmount(
   amount: bigint,
   decimals: number,
-  opts?: { compact?: boolean; symbol?: string; trim?: boolean },
+  opts?: { compact?: boolean; symbol?: string; trim?: boolean; displayDecimals?: number },
 ): string {
   if (decimals < 0 || decimals > 18) return '—';
   const negative = amount < 0n;
@@ -129,7 +174,7 @@ export function formatTokenAmount(
   const scale = 10n ** BigInt(decimals);
   const whole = abs / scale;
   const fraction = abs % scale;
-  const maxShown = opts?.compact ? (decimals >= 8 ? decimals : Math.min(2, decimals)) : decimals;
+  const maxShown = opts?.displayDecimals ?? (opts?.compact ? (decimals >= 8 ? decimals : Math.min(2, decimals)) : decimals);
   let frac = fraction.toString().padStart(decimals, '0').slice(0, maxShown);
   const trim = opts?.trim ?? Boolean(opts?.compact && decimals >= 8);
   if (trim) frac = frac.replace(/0+$/, '');

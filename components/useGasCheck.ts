@@ -12,7 +12,7 @@ export const GAS_UNITS = {
 export function useGasCheck(chainId: ChainId | undefined, gasUnits: bigint) {
   const { address } = useAccount();
   const enabled = Boolean(address && chainId);
-  const { data: balance } = useBalance({ address, chainId, query: { enabled, refetchInterval: 20_000 } });
+  const { data: balance, dataUpdatedAt } = useBalance({ address, chainId, query: { enabled, refetchInterval: 20_000 } });
   const { data: fees } = useEstimateFeesPerGas({ chainId, query: { enabled, refetchInterval: 20_000 } });
   const feePerGas = fees?.maxFeePerGas ?? fees?.gasPrice;
   const needed = feePerGas ? gasUnits * feePerGas : null;
@@ -21,6 +21,7 @@ export function useGasCheck(chainId: ChainId | undefined, gasUnits: bigint) {
     enough: !known || balance.value >= needed,
     balanceEth: balance ? formatEther(balance.value) : null,
     neededEth: needed !== null ? formatEther(needed) : null,
+    updatedAt: dataUpdatedAt > 0 ? dataUpdatedAt : null,
   };
 }
 

@@ -5,6 +5,8 @@ import { formatApr, formatUsdExact } from '@/lib/amount';
 import { compareBorrowVsLend, type ComparedPool, type MarketPair } from '@/lib/opportunities';
 import { chainLabel, protocolAppUrl, protocolLabel, type Venue } from '@/lib/protocol';
 import type { OpenPosition } from '@/components/useAllPositions';
+import { AprChangeLine } from '@/components/RiskStatus';
+import type { LoanRateStatus } from '@/lib/finance/loanView';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 
@@ -67,10 +69,12 @@ export default function BorrowVsLend({
   positions,
   venues,
   fetchedAt,
+  openingRate,
 }: {
   positions: OpenPosition[];
   venues: Venue[];
   fetchedAt?: number;
+  openingRate?: LoanRateStatus | null;
 }) {
   const compare = compareBorrowVsLend(positions, venues);
   if (!compare) return null;
@@ -101,6 +105,12 @@ export default function BorrowVsLend({
             <p className="text-lg font-bold">{formatApr(borrow.apr)}</p>
             <p className="text-muted-foreground">{formatUsdExact(borrow.year)}/yr on {formatUsdExact(compare.debtUsd)}</p>
             <p className="text-[11px] text-muted-foreground">{protocolLabel(borrow.venue.protocol)} · {chainLabel(borrow.venue.chainId)}</p>
+            {openingRate?.icon ? (
+              <div className="text-[11px]">
+                <p className="text-muted-foreground">Since loan opening</p>
+                <AprChangeLine status={openingRate} />
+              </div>
+            ) : null}
           </div>
           <div className="rounded-lg border px-3 py-2">
             <p className="text-muted-foreground">Earn if you lend that USDC here</p>

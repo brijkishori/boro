@@ -137,6 +137,7 @@ function persistReceipt(input: {
       previewCurrent: input.ctx.previewCurrent,
       previewProjected: input.ctx.previewProjected,
       previewAt: input.ctx.previewAt,
+      blockNumber: input.receipt.blockNumber,
     });
     persistAuditEvent(event);
     if (event.action === 'repay' && event.interestPaid && event.principalPaid) {
