@@ -394,16 +394,24 @@ function applyPrice(venues: Venue[], btcPriceUsd: number): Venue[] {
 }
 
 async function fetchBtcSpot(): Promise<number> {
+  const reference = await fetchBtcReferences();
+  return reference.btc;
+}
+
+async function fetchBtcReferences(): Promise<{ btc: number; wrapper: number }> {
   try {
     const response = await fetch(
-      'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd',
+      'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,coinbase-wrapped-btc&vs_currencies=usd',
       { signal: AbortSignal.timeout(8_000), cache: 'no-store' },
     );
-    if (!response.ok) return 0;
-    const body = (await response.json()) as { bitcoin?: { usd?: unknown } };
-    return asNumber(body.bitcoin?.usd) ?? 0;
+    if (!response.ok) return { btc: 0, wrapper: 0 };
+    const body = (await response.json()) as { bitcoin?: { usd?: unknown }; 'coinbase-wrapped-btc'?: { usd?: unknown } };
+    const btc = asNumber(body.bitcoin?.usd) ?? 0;
+    const wrapper = asNumber(body['coinbase-wrapped-btc']?.usd) ?? 0;
+    const trusted = btc > 0 && wrapper > 0 && Math.abs(wrapper - btc) / btc <= 0.15 ? wrapper : 0;
+    return { btc, wrapper: trusted };
   } catch {
-    return 0;
+    return { btc: 0, wrapper: 0 };
   }
 }
 
@@ -424,7 +432,7 @@ async function loadRates(): Promise<RatesPayload> {
     fetchMorphoMarkets(borrowWhere),
     fetchMorphoMarkets(lendWhere),
     fetchAaveMarkets(),
-    fetchBtcSpot(),
+    fetchBtcReferences(),
   ]);
 
   let venues: Venue[] = [];
@@ -440,8 +448,9 @@ async function loadRates(): Promise<RatesPayload> {
     prices = parsed.prices;
   } else warnings.push('Aave rates are unavailable.');
 
+  const reference = spot.status === 'fulfilled' ? spot.value : { btc: 0, wrapper: 0 };
   let btcPriceUsd = median(prices.filter((price) => price >= 1_000 && price <= 2_000_000));
-  if (btcPriceUsd === 0 && spot.status === 'fulfilled') btcPriceUsd = spot.value;
+  if (btcPriceUsd === 0 && reference.btc > 0) btcPriceUsd = reference.btc;
   if (btcPriceUsd === 0) btcPriceUsd = await fetchBtcSpot();
 
   const extras = await Promise.allSettled([
@@ -459,7 +468,14 @@ async function loadRates(): Promise<RatesPayload> {
   venues = dedupeVenues(applyPrice(venues, btcPriceUsd));
   if (venues.length === 0) throw new Error('no safe venues');
 
-  return { fetchedAt: Date.now(), btcPriceUsd, venues, warnings };
+  return {
+    fetchedAt: Date.now(),
+    btcPriceUsd,
+    referenceBtcUsd: reference.btc > 0 ? reference.btc : undefined,
+    wrapperBtcUsd: reference.wrapper > 0 ? reference.wrapper : undefined,
+    venues,
+    warnings,
+  };
 }
 
 export function getRates(opts?: { bypassCache?: boolean }): Promise<RatesPayload> {

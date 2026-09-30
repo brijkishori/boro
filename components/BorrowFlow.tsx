@@ -33,6 +33,7 @@ import {
   type PositionChangeAction,
 } from '@/lib/finance/positionChange';
 import { projectAfterTransaction, tokenShortfall } from '@/lib/finance/projection';
+import { tokenUnits, type RemedyHandoff } from '@/lib/finance/actionPlanner';
 import { ABOVE_TARGET_MESSAGE, positiveRawDelta } from '@/lib/finance/transactionDraft';
 import {
   CONFIRM_DRIFT_MESSAGE,
@@ -71,6 +72,7 @@ export default function BorrowFlow({
   onSelect,
   initialCollateral,
   initialBorrowUsd,
+  handoff = null,
 }: {
   quote: Venue | null;
   fetchedAt: number;
@@ -78,6 +80,7 @@ export default function BorrowFlow({
   onSelect?: (id: string) => void;
   initialCollateral?: number;
   initialBorrowUsd?: number;
+  handoff?: RemedyHandoff | null;
 }) {
   const { address, chain, isConnected } = useAccount();
   const [supplyAmount, setSupplyAmount] = useState<bigint | null>(null);
@@ -102,6 +105,8 @@ export default function BorrowFlow({
   const [confirmBalance, setConfirmBalance] = useState<bigint | null>(null);
   const [confirmBorrowRoom, setConfirmBorrowRoom] = useState<bigint | null>(null);
   const [confirmError, setConfirmError] = useState('');
+  const [handoffNotice, setHandoffNotice] = useState('');
+  const appliedHandoff = useRef(false);
   const [driftChanges, setDriftChanges] = useState<DriftChange[]>([]);
   const confirmLock = useRef<ConfirmLock>({ busy: false });
   const reviewedSnapRef = useRef<ConfirmSnapshot | null>(null);
@@ -191,6 +196,19 @@ export default function BorrowFlow({
     if (!confirmed || !runAfterApproval) return;
     continueRef.current(confirmed.action);
   }, [confirmed, runAfterApproval]);
+
+  useEffect(() => {
+    if (appliedHandoff.current || !handoff || !quote || handoff.type !== 'ADD_COLLATERAL' || handoff.marketId !== quote.id) return;
+    if (!(handoff.collateralAmount && handoff.collateralAmount > 0)) return;
+    const units = tokenUnits(handoff.collateralAmount, quote.assetDecimals);
+    appliedHandoff.current = true;
+    setSupplySeed(units);
+    setSupplySeedKey(1);
+    setSupplyAmount(units);
+    setReviewAction('SUPPLY_COLLATERAL');
+    reviewedSnapRef.current = null;
+    if (handoff.notice) setHandoffNotice(handoff.notice);
+  }, [handoff, quote]);
 
 
   if (!quote || !safe || !spender) {
@@ -698,7 +716,7 @@ export default function BorrowFlow({
               assetDecimals={reviewVenue.assetDecimals}
               busy={isBusy || confirmLock.current.busy}
               awaitingWallet={isAwaitingWallet}
-              notice={confirmError || undefined}
+              notice={confirmError || handoffNotice || undefined}
               driftChanges={driftChanges}
               statusMessage={statusMessage}
               txHash={hash}

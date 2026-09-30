@@ -21,6 +21,7 @@ export function useGasCheck(chainId: ChainId | undefined, gasUnits: bigint) {
     enough: !known || balance.value >= needed,
     balanceEth: balance ? formatEther(balance.value) : null,
     neededEth: needed !== null ? formatEther(needed) : null,
+    feePerGas: feePerGas ?? null,
     updatedAt: dataUpdatedAt > 0 ? dataUpdatedAt : null,
   };
 }

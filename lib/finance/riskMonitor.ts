@@ -820,7 +820,7 @@ export function buildRiskMonitor(input: RiskMonitorInput, now = input.now ?? Dat
   const remedies = [
     remedyProposal('REPAY', repay, thresholds.preferredHealthFactor, resourceFeasibility(repay.repayAmount, walletDebt), calculatedAt, input.sourceBlock, 'Repay to preferred HF'),
     remedyProposal('ADD_COLLATERAL', collateral, thresholds.preferredHealthFactor, resourceFeasibility(collateral.collateralAmount, walletCollateral), calculatedAt, input.sourceBlock, 'Add collateral to preferred HF'),
-    remedyProposal('MIXED', mixed, thresholds.preferredHealthFactor, mixedFeasibility(mixed, { ...input, walletDebtAssetBalance: walletDebt, walletCollateralBalance: walletCollateral }), calculatedAt, input.sourceBlock, 'Mixed remedy'),
+    remedyProposal('MIXED', mixed, thresholds.preferredHealthFactor, mixedFeasibility(mixed, { ...input, walletDebtAssetBalance: walletDebt, walletCollateralBalance: walletCollateral }), calculatedAt, input.sourceBlock, 'Balanced remedy'),
   ].filter((item): item is ProposedRemedy => item !== null);
   const steps = ladder(input, healthFactor, thresholds);
   const apr = input.currentBorrowApr ?? null;

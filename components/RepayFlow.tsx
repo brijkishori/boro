@@ -33,6 +33,7 @@ import {
 } from '@/lib/finance/confirmSafety';
 import { fetchFreshConfirmReads, snapshotFromFreshReads, withConfirmTimeout } from '@/lib/finance/fetchConfirm';
 import { liveSplit } from '@/lib/audit';
+import { tokenUnits, type RemedyHandoff } from '@/lib/finance/actionPlanner';
 import { useFeeEstimate } from './useNetworkFee';
 import {
   chainLabel,
@@ -47,7 +48,7 @@ import { useAudit } from './useAudit';
 import { LoanLedger } from './LoanLedger';
 import { asBig, episodeKey, findOpenEpisode, formatDuration } from '@/lib/audit';
 
-export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Venue | null; venues?: Venue[]; onSelect?: (id: string) => void }) {
+export default function RepayFlow({ quote, venues = [], onSelect, handoff = null }: { quote: Venue | null; venues?: Venue[]; onSelect?: (id: string) => void; handoff?: RemedyHandoff | null }) {
   const { address, chain, isConnected } = useAccount();
   const [repayAmount, setRepayAmount] = useState<bigint | null>(null);
   const [withdrawAmount, setWithdrawAmount] = useState<bigint | null>(null);
@@ -56,6 +57,10 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
   const [maxRepay, setMaxRepay] = useState(false);
   const [maxWithdraw, setMaxWithdraw] = useState(false);
   const [partialPin, setPartialPin] = useState<bigint | undefined>();
+  const [handoffSeed, setHandoffSeed] = useState<bigint | null>(null);
+  const [handoffKey, setHandoffKey] = useState(0);
+  const [handoffNotice, setHandoffNotice] = useState('');
+  const appliedHandoff = useRef(false);
   const { send, isBusy, isAwaitingWallet, confirmed, hash, phase, receiptBlock, statusMessage, retryPositionRefresh, cancelPending } = useSendTx();
   const [reviewAction, setReviewAction] = useState<PositionChangeAction | null>(null);
   const [runAfterApproval, setRunAfterApproval] = useState(false);
@@ -150,6 +155,19 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
     if (!confirmed || !runAfterApproval) return;
     continueRef.current(confirmed.action);
   }, [confirmed, runAfterApproval]);
+
+  useEffect(() => {
+    if (appliedHandoff.current || !handoff || !quote || handoff.type !== 'REPAY' || handoff.marketId !== quote.id) return;
+    if (!(handoff.repayAmount && handoff.repayAmount > 0)) return;
+    const units = tokenUnits(handoff.repayAmount, quote.loanDecimals);
+    appliedHandoff.current = true;
+    setHandoffSeed(units);
+    setHandoffKey(1);
+    setRepayAmount(units);
+    setReviewAction('REPAY');
+    reviewedSnapRef.current = null;
+    if (handoff.notice) setHandoffNotice(handoff.notice);
+  }, [handoff, quote]);
 
 
   useEffect(() => {
@@ -388,6 +406,8 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
             percentLabel={(percent) => (percent === 100 ? 'Full repayment' : `${percent}%`)}
             epoch={repayEpoch}
             pinned={maxRepay ? undefined : partialPin}
+            seed={handoffSeed}
+            seedKey={handoffKey}
             invalid={repayTooBig}
             disabled={cappedDebt === 0n}
             onAmount={setRepayAmount}
@@ -443,7 +463,7 @@ export default function RepayFlow({ quote, venues = [], onSelect }: { quote: Ven
               assetDecimals={quote.assetDecimals}
               busy={isBusy || confirmLock.current.busy}
               awaitingWallet={isAwaitingWallet}
-              notice={confirmError || undefined}
+              notice={confirmError || handoffNotice || undefined}
               driftChanges={driftChanges}
               statusMessage={statusMessage}
               txHash={hash}

@@ -400,3 +400,46 @@ test('Refinance UI model implementation matches requirements', () => {
   assert.equal(ui.includes('Unknown'), true);
   assert.equal(ui.includes('Unavailable'), true);
 });
+
+test('Refinance UI groups candidates logically and respects default collapsed states', () => {
+  const ui = readFileSync(new URL('../../components/RefinancePanel.tsx', import.meta.url), 'utf8');
+
+  // Validate directly comparable group expanded initially (no disclosure button, rendered directly)
+  assert.equal(ui.includes('comparablePlans.length > 0'), true);
+  assert.equal(ui.includes('{comparablePlans.map(renderPlanCard)}'), true);
+  
+  // Validate wrapper-change group collapsed initially
+  assert.ok(ui.match(/const \[showWrapperChange, setShowWrapperChange\] = useState(?:<boolean>)?\(false\)/));
+  // Validate clicking disclosure expands the group
+  assert.equal(ui.includes('onClick={() => setShowWrapperChange(!showWrapperChange)}'), true);
+  
+  // Validate cross-chain group collapsed initially
+  assert.ok(ui.match(/const \[showCrossChain, setShowCrossChain\] = useState(?:<boolean>)?\(false\)/));
+  // Validate clicking disclosure expands the group
+  assert.equal(ui.includes('onClick={() => setShowCrossChain(!showCrossChain)}'), true);
+  
+  // Validate cross-chain candidate cards are not rendered until expanded
+  assert.equal(ui.includes('{showCrossChain && ('), true);
+  assert.equal(ui.includes('{crossChainPlans.map(renderPlanCard)}'), true);
+
+  // Validate the main heading is updated
+  assert.equal(ui.includes('Refinance alternatives'), true);
+  assert.equal(ui.includes('SUPPORTED CANDIDATE MARKETS'), false);
+});
+
+test('Refinance UI summary uses Group A correctly and handles secondary options', () => {
+  const ui = readFileSync(new URL('../../components/RefinancePanel.tsx', import.meta.url), 'utf8');
+
+  // primary summary uses Group A only
+  assert.equal(ui.includes('const bestComparablePlan = useMemo(() => {'), true);
+  assert.equal(ui.includes('comparablePlans'), true);
+
+  // current market lowest among Group A
+  assert.equal(ui.includes('Current market has the lowest current APR among directly comparable'), true);
+
+  // cheaper Group A candidate summary
+  assert.equal(ui.includes('Lowest directly comparable APR:'), true);
+
+  // lower cross-chain/wrapper candidate does not become primary summary
+  assert.equal(ui.includes('Lower APR exists outside the directly comparable group:'), true);
+});

@@ -249,8 +249,6 @@ export function estimateMigrationCost(input: {
   ethPriceUsd?: number | null;
 }): MigrationCostEstimate {
   const isSameChainSameWrapper = input.classification === 'SAME_CHAIN_SAME_WRAPPER';
-  const hasGasData = input.gasPriceWei !== undefined && input.gasPriceWei !== null
-    && input.ethPriceUsd !== undefined && input.ethPriceUsd !== null && input.ethPriceUsd > 0;
 
   const repayGas = REFINANCE_GAS_UNITS.repay;
   const withdrawGas = REFINANCE_GAS_UNITS.withdraw;

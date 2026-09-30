@@ -141,6 +141,8 @@ export type MoonwellMarket = {
 export type RatesPayload = {
   fetchedAt: number;
   btcPriceUsd: number;
+  referenceBtcUsd?: number;
+  wrapperBtcUsd?: number;
   venues: Venue[];
   warnings: string[];
 };

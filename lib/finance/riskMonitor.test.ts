@@ -321,7 +321,8 @@ test('safety leads with the current decision and refresh uses a direct live read
   assert.equal(source.includes('Refresh live data'), true);
   assert.equal(source.includes('fetchFreshPosition'), true);
   assert.equal(source.includes('writeFreshPosition'), true);
-  assert.equal(source.includes('No corrective action required'), true);
+  const planner = readFileSync(new URL('../../lib/finance/actionPlanner.ts', import.meta.url), 'utf8');
+  assert.equal(planner.includes('No corrective action required'), true);
   assert.equal(source.includes('useSendTx'), false);
   const loans = readFileSync(new URL('../../app/loans/page.tsx', import.meta.url), 'utf8');
   assert.equal(loans.includes('Borrowed after opening'), true);

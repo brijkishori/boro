@@ -6,7 +6,10 @@ import { historyCoverage } from '@/lib/finance/history';
 import { loanRateHistory } from '@/lib/finance/openingApr';
 import { availableToBorrowUsd, chainLabel, protocolLabel, protocolMarketId, type Venue } from '@/lib/protocol';
 import { type RatePoint } from '@/lib/rateHistory';
-import { storeJson } from '@/lib/store';
+import { appendTrendSample, buildEarlyWarning, earlyWarningEmailLines, type TrendSample } from '@/lib/finance/earlyWarning';
+import { resolveRiskThresholds } from '@/lib/finance/riskMonitor';
+import { serverTrendKey } from '@/lib/finance/trendStore';
+import { storeJson, storeSetJson } from '@/lib/store';
 import { adapterFor } from '@/lib/adapters';
 import { aprAlert, healthAlert, liquidationAlert, loanFacts, monthlyAlert, refinanceAlert, renderAlertEmail, thresholdAlert, weeklyAlert, type AlertCopy } from '@/lib/alertEmail';
 import { allSubscribers, saveSubscriber, shouldSend, type AlertSubscriber } from '@/lib/alerts';
@@ -136,7 +139,7 @@ function recommendationInput(
   };
 }
 
-function recommendedCopy(address: string, event: AlertEvent): AlertCopy {
+function recommendedCopy(address: string, event: AlertEvent, extra: string[] = []): AlertCopy {
   const kind = deliveryKind(event);
   const subject = event.category === 'data-health'
     ? 'Data warning: SimpleBTC could not verify fresh market data'
@@ -146,6 +149,7 @@ function recommendedCopy(address: string, event: AlertEvent): AlertCopy {
     `Market ${event.marketId}`,
     event.currentHf === null ? 'Health factor unavailable' : `Health factor ${event.currentHf}`,
     event.currentOraclePrice === null ? 'Oracle price unavailable' : `Oracle price ${event.currentOraclePrice}`,
+    ...extra,
   ]);
   return { ...copy, subject };
 }
@@ -175,6 +179,63 @@ function digestPosition(
     additionalBorrowingUsd: summary.additionalBorrowingUsd,
     networkFeesUsd: summary.networkFeesUsd,
   };
+}
+
+async function observedTrendLines(
+  wallet: string,
+  venue: Venue,
+  snapshot: { collateral: bigint; debt: bigint; healthFactor: number | null; ltv: number; liquidationPrice: number; ready: boolean },
+  debtUsd: number,
+  plan: { preferredHealthFactor?: number; rules: Array<{ id: string; threshold: number | null }> } | undefined,
+  now: number,
+) {
+  try {
+    const key = serverTrendKey(wallet, venue.id);
+    const prior = (await storeJson<TrendSample[]>(key)) ?? [];
+    const sample: TrendSample = {
+      t: now,
+      hf: snapshot.healthFactor ?? undefined,
+      ltv: snapshot.ltv,
+      oracle: venue.priceUsd > 0 ? venue.priceUsd : undefined,
+      apr: Number.isFinite(venue.borrowApr) ? venue.borrowApr : undefined,
+      utilization: venue.utilization,
+      liquidity: availableToBorrowUsd(venue),
+    };
+    const stored = appendTrendSample(Array.isArray(prior) ? prior : [], sample, now);
+    if (stored !== prior) await storeSetJson(key, JSON.parse(JSON.stringify(stored)), 8 * 24 * 3600);
+    const threshold = (id: string) => plan?.rules.find((rule) => rule.id === id)?.threshold;
+    const warning = buildEarlyWarning({
+      now,
+      healthFactor: snapshot.healthFactor,
+      ltv: snapshot.ltv,
+      cushion: venue.priceUsd > 0 && snapshot.liquidationPrice > 0 ? (venue.priceUsd - snapshot.liquidationPrice) / venue.priceUsd : null,
+      debt: debtUsd,
+      collateralAmount: Number(formatUnits(snapshot.collateral, venue.assetDecimals)),
+      liquidationThreshold: venue.collateralRisk?.liquidationLtv ?? venue.maxLtv,
+      oraclePrice: venue.priceUsd,
+      borrowApr: venue.borrowApr,
+      utilization: venue.utilization ?? null,
+      availableLiquidity: availableToBorrowUsd(venue),
+      samples: stored,
+      safetyFresh: snapshot.ready && venue.priceUsd > 0,
+      positionFreshness: snapshot.ready ? 'fresh' : 'unavailable',
+      oracleFreshness: venue.priceUsd > 0 ? 'fresh' : 'unavailable',
+      rateFreshness: 'fresh',
+      marketFreshness: 'fresh',
+      thresholds: resolveRiskThresholds({
+        preferredHealthFactor: plan?.preferredHealthFactor,
+        watch: threshold('hf-watch'),
+        prepare: threshold('hf-prepare'),
+        act: threshold('hf-act'),
+        urgent: threshold('hf-urgent'),
+        utilizationWatch: threshold('utilization-watch'),
+        utilizationHigh: threshold('utilization-high'),
+      }),
+    });
+    return earlyWarningEmailLines(warning);
+  } catch {
+    return [];
+  }
 }
 
 async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: boolean, contexts: Map<string, VenueRateContext>) {
@@ -265,9 +326,11 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
           emailResolutions: plan.emailResolutions,
         });
         plan.states = evaluated.states;
+        const trendLines = await observedTrendLines(subscriber.address, venue, snapshot, debtUsd, plan, now);
         for (const event of evaluated.notifications) {
           if (event.alertType === 'monthly-statement') continue;
-          messages.push(recommendedCopy(subscriber.address, event));
+          const contextual = event.category === 'position-safety' || event.alertType === 'rate-velocity' || event.alertType.startsWith('utilization-') || event.alertType === 'liquidity';
+          messages.push(recommendedCopy(subscriber.address, event, contextual ? trendLines : []));
         }
         if (openDebt && monthSummary && plan.rules.some((rule) => rule.enabled && rule.id === 'monthly-statement')) {
           statementRows.push(...monthlyStatementLines(

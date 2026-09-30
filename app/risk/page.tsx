@@ -42,6 +42,9 @@ function RiskPageInner() {
           accruedInterest={selected.accruedUnpaidUsd}
           events={book.audit.events}
           episodeKey={selected.lifecycleId}
+          referenceBtcUsd={book.payload?.referenceBtcUsd}
+          wrapperBtcUsd={book.payload?.wrapperBtcUsd}
+          venues={book.venues}
         />
       )}
     </div>

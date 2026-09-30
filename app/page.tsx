@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
+import { takeRemedyHandoff, type RemedyHandoff } from '@/lib/finance/actionPlanner';
 import { useAccount, useConnect } from 'wagmi';
 import type { Address } from 'viem';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -63,9 +64,14 @@ function Dashboard() {
   const [sortMode, setSortMode] = useState<MarketSort>('best-fit');
   const { network, setNetwork } = useNetworkFilter();
   const started = useRef(false);
+  const [handoff, setHandoff] = useState<RemedyHandoff | null>(null);
   const planner = useSyncExternalStore(subscribePlanner, plannerSnapshot, plannerServerSnapshot);
   const mode = modeOverride ?? urlMode ?? 'borrow';
   const selectedId = selectedOverride ?? marketParam;
+
+  useEffect(() => {
+    setHandoff(takeRemedyHandoff(window.sessionStorage));
+  }, []);
 
   useEffect(() => {
     if (started.current) return;
@@ -311,10 +317,11 @@ function Dashboard() {
             onSelect={chooseVenue}
             initialCollateral={scenario?.collateralAmount}
             initialBorrowUsd={scenario?.borrowAmount}
+            handoff={handoff && selected && handoff.marketId === selected.id && handoff.type === 'ADD_COLLATERAL' ? handoff : null}
           />
         )}
         {mode === 'lend' && <LendFlow key={selected?.id ?? 'lend'} quote={selected} fetchedAt={payload?.fetchedAt ?? 0} venues={ranked} onSelect={chooseVenue} />}
-        {mode === 'repay' && <RepayFlow key={selected?.id ?? 'repay'} quote={selected} venues={ranked} onSelect={chooseVenue} />}
+        {mode === 'repay' && <RepayFlow key={selected?.id ?? 'repay'} quote={selected} venues={ranked} onSelect={chooseVenue} handoff={handoff && selected && handoff.marketId === selected.id && handoff.type === 'REPAY' ? handoff : null} />}
       </section>
 
       <details className="rounded-xl border bg-card px-4 py-3">

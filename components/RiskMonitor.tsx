@@ -1,7 +1,8 @@
 'use client';
 
-import { useMemo, useState, useSyncExternalStore } from 'react';
-import { useAccount, useReadContracts } from 'wagmi';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useRouter } from 'next/navigation';
+import { useAccount, useReadContract, useReadContracts } from 'wagmi';
 import { formatUnits, type Address } from 'viem';
 import { fetchFreshPosition, fetchFreshRates, fetchFreshTokenBalance, venueFromPayload } from '@/lib/finance/fetchConfirm';
 import { writeFreshPosition } from '@/lib/finance/positionCache';
@@ -43,7 +44,26 @@ import {
   type SimulationMode,
   type SimulationState,
 } from '@/lib/finance/riskMonitor';
-import { availableToBorrowUsd, CHAINS, chainLabel, protocolMarketId, sameAssetOnOtherChain, type ChainId } from '@/lib/protocol';
+import { availableToBorrowUsd, CHAINS, chainLabel, protocolMarketId, sameAssetOnOtherChain, type ChainId, type Venue } from '@/lib/protocol';
+import { ETH_USD_FEED, feedAbi, parseFeedUsd } from '@/lib/prices';
+import { useRates } from '@/components/useRates';
+import RefinancePanel from '@/components/RefinancePanel';
+import ActionPlanner from '@/components/ActionPlanner';
+import EarlyWarningCard, { MarketIntelligence, RateTrendDetail } from '@/components/EarlyWarningCard';
+import { alertForDriver, buildEarlyWarning, type TrendSample } from '@/lib/finance/earlyWarning';
+import { readTrendSamples, sameTrendSamples, writeTrendSample } from '@/lib/finance/trendStore';
+import {
+  appendPlannerHistory,
+  buildPlannerCards,
+  buildRemedyHandoff,
+  correctiveCards,
+  DRIFT_NOTICE,
+  projectCustomAction,
+  reviewDecision,
+  stageRemedyHandoff,
+  type PlannerCard,
+  type PlannerPosition,
+} from '@/lib/finance/actionPlanner';
 
 const NO_CONFIG = {
   preferredHealthFactor: null as number | null,
@@ -201,6 +221,9 @@ export default function RiskMonitor({
   accruedInterest,
   events,
   episodeKey,
+  referenceBtcUsd = null,
+  wrapperBtcUsd = null,
+  venues,
 }: {
   headline?: {
     healthFactor: number | null;
@@ -212,8 +235,24 @@ export default function RiskMonitor({
   accruedInterest: number | null;
   events: AuditEvent[];
   episodeKey: string | null;
+  referenceBtcUsd?: number | null;
+  wrapperBtcUsd?: number | null;
+  venues?: Venue[];
 }) {
   const { address } = useAccount();
+  const ratesHook = useRates();
+  const allVenues = venues && venues.length > 0 ? venues : (ratesHook.payload?.venues ?? []);
+  const { data: ethPriceData } = useReadContract({
+    address: ETH_USD_FEED,
+    abi: feedAbi,
+    functionName: 'latestRoundData',
+    chainId: 1,
+    query: { refetchInterval: 60_000 },
+  });
+  const ethPriceUsd = useMemo(() => {
+    const parsed = parseFeedUsd(ethPriceData as readonly [bigint, bigint, bigint, bigint, bigint] | undefined);
+    return parsed > 0 ? parsed : null;
+  }, [ethPriceData]);
   const { venue, snapshot } = position;
   const marketKey = alertMarketKey({
     wallet: address ?? '',
@@ -228,7 +267,10 @@ export default function RiskMonitor({
   );
   const gas = useGasCheck(venue.chainId, GAS_UNITS.write);
   const otherChain: ChainId = venue.chainId === 1 ? 8453 : 1;
-  const otherCollateral = sameAssetOnOtherChain(venue.chainId, venue.assetSymbol);
+  const otherCollateral = useMemo(
+    () => sameAssetOnOtherChain(venue.chainId, venue.assetSymbol),
+    [venue.assetSymbol, venue.chainId],
+  );
   const otherUsdc = CHAINS[otherChain].usdc;
   const { data: balances, dataUpdatedAt: balancesUpdatedAt } = useReadContracts({
     contracts: address ? [
@@ -241,7 +283,7 @@ export default function RiskMonitor({
   });
   const [aprInput, setAprInput] = useState('');
   const [simulation, setSimulation] = useState<SimulationState | null>(null);
-  const [tab, setTab] = useState<'safety' | 'rates' | 'readiness' | 'planner' | 'whatif' | 'market'>('safety');
+  const [tab, setTab] = useState<'safety' | 'rates' | 'readiness' | 'planner' | 'whatif' | 'refinance' | 'market'>('safety');
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState('');
   const [liveOverride, setLiveOverride] = useState<{
@@ -251,7 +293,14 @@ export default function RiskMonitor({
     collateral: number;
     gas: number | null;
     at: number;
+    blockNumber: bigint;
   } | null>(null);
+  const router = useRouter();
+  const stressTabSet = useRef(false);
+  const [plannerNotice, setPlannerNotice] = useState('');
+  const trendId = `${(address ?? 'signed-out').toLowerCase()}:${venue.chainId}:${venue.id}`;
+  const [positionSamples, setPositionSamples] = useState<TrendSample[]>([]);
+  const [marketSamples, setMarketSamples] = useState<TrendSample[]>([]);
   const shownVenue = liveOverride?.venue ?? venue;
   const shownSnapshot = liveOverride?.snapshot ?? snapshot;
 
@@ -302,7 +351,114 @@ export default function RiskMonitor({
   }), [accruedInterest, address, balances, balancesUpdatedAt, config, gas.balanceEth, gas.neededEth, gas.updatedAt, liveOverride, otherCollateral, otherUsdc.decimals, position.observedAt, principal, shownSnapshot, shownVenue]);
 
   const report = useMemo(() => buildRiskMonitor(liveInput), [liveInput]);
+  const plannerPosition = useMemo<PlannerPosition>(() => ({
+    collateralAmount: liveInput.collateralAmount,
+    debt: liveInput.totalDebt,
+    oraclePrice: liveInput.oraclePrice ?? 0,
+    liquidationThreshold: liveInput.liquidationThreshold,
+    healthFactor: report.snapshot.position.healthFactor,
+    walletDebt: report.domains.walletBalance === 'fresh' ? liveInput.walletDebtAssetBalance ?? null : null,
+    walletCollateral: report.domains.collateralBalance === 'fresh' ? liveInput.walletCollateralBalance ?? null : null,
+    elsewhereDebt: liveInput.elsewhereDebtAsset ?? null,
+    elsewhereCollateral: liveInput.elsewhereCollateral ?? null,
+  }), [liveInput, report]);
+  const correction = useMemo(
+    () => correctiveCards(plannerPosition, report.thresholds.preferredHealthFactor, report.domains.position === 'fresh' && report.domains.oracle === 'fresh'),
+    [plannerPosition, report],
+  );
+  useEffect(() => {
+    if (stressTabSet.current) return;
+    const state = report.decision.currentState;
+    if (state === 'ACT' || state === 'URGENT' || state === 'LIQUIDATION_BOUNDARY') {
+      stressTabSet.current = true;
+      setTab('planner');
+    }
+  }, [report.decision.currentState]);
+  useEffect(() => {
+    setPositionSamples(readTrendSamples(window.localStorage, trendId));
+  }, [trendId]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/rates/history?venue=${encodeURIComponent(venue.id)}&range=7d`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body: { points?: Array<{ t?: number; borrow?: number; utilization?: number; liquidity?: number }> } | null) => {
+        if (cancelled || !body?.points) return;
+        setMarketSamples(body.points.flatMap((point) => {
+          if (typeof point.t !== 'number' || !Number.isFinite(point.t)) return [];
+          return [{
+            t: point.t > 10_000_000_000 ? point.t : point.t * 1000,
+            apr: typeof point.borrow === 'number' ? point.borrow : undefined,
+            utilization: typeof point.utilization === 'number' ? point.utilization : undefined,
+            liquidity: typeof point.liquidity === 'number' ? point.liquidity : undefined,
+          }];
+        }));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [venue.id]);
+  const positionFresh = report.domains.position === 'fresh' && report.domains.oracle === 'fresh';
+  const trendHf = report.snapshot.position.healthFactor;
+  const trendLtv = report.snapshot.position.ltv;
+  const trendCushion = report.snapshot.position.liquidationCushionPercent;
+  const trendOracle = report.snapshot.market.oraclePrice;
+  const trendApr = report.snapshot.market.currentBorrowApr;
+  const trendUtilization = report.snapshot.market.utilization;
+  const trendLiquidity = report.snapshot.market.availableLiquidity;
+  useEffect(() => {
+    if (!address || !positionFresh) return;
+    const sample: TrendSample = {
+      t: Date.now(),
+      hf: trendHf ?? undefined,
+      ltv: trendLtv ?? undefined,
+      cushion: trendCushion ?? undefined,
+      oracle: trendOracle ?? undefined,
+      apr: trendApr ?? undefined,
+      utilization: trendUtilization ?? undefined,
+      liquidity: trendLiquidity ?? undefined,
+      reference: referenceBtcUsd && referenceBtcUsd > 0 ? referenceBtcUsd : undefined,
+      wrapper: wrapperBtcUsd && wrapperBtcUsd > 0 ? wrapperBtcUsd : undefined,
+    };
+    try {
+      const next = writeTrendSample(window.localStorage, trendId, sample);
+      setPositionSamples((current) => (sameTrendSamples(current, next) ? current : next));
+    } catch {
+      // The trend log is analysis history. A storage failure leaves the live position unchanged.
+    }
+  }, [address, positionFresh, referenceBtcUsd, trendApr, trendCushion, trendHf, trendId, trendLiquidity, trendLtv, trendOracle, trendUtilization, wrapperBtcUsd]);
   const rateHistory = useMemo(() => loanRateHistory(events, episodeKey ?? ''), [episodeKey, events]);
+  const warning = useMemo(() => buildEarlyWarning({
+    healthFactor: report.snapshot.position.healthFactor,
+    ltv: report.snapshot.position.ltv,
+    cushion: report.snapshot.position.liquidationCushionPercent,
+    debt: liveInput.totalDebt,
+    collateralAmount: liveInput.collateralAmount,
+    liquidationThreshold: liveInput.liquidationThreshold,
+    oraclePrice: liveInput.oraclePrice ?? null,
+    borrowApr: liveInput.currentBorrowApr ?? null,
+    openingApr: rateHistory.opening?.normalizedBorrowApr ?? null,
+    avg1h: liveInput.avg1h,
+    avg6h: liveInput.avg6h,
+    avg24h: liveInput.avg24h,
+    avg7d: liveInput.avg7d,
+    utilization: liveInput.utilization ?? null,
+    availableLiquidity: liveInput.availableLiquidity ?? null,
+    referenceBtc: referenceBtcUsd,
+    wrapperPrice: wrapperBtcUsd,
+    samples: positionSamples,
+    marketSamples,
+    safetyFresh: report.domains.position === 'fresh' && report.domains.oracle === 'fresh',
+    positionFreshness: report.domains.position,
+    oracleFreshness: report.domains.oracle,
+    rateFreshness: report.domains.borrowRate,
+    marketFreshness: report.domains.liquidity,
+    thresholds: report.thresholds,
+  }), [liveInput, marketSamples, positionSamples, rateHistory.opening, referenceBtcUsd, report, wrapperBtcUsd]);
+  const alertLabel = alertForDriver(
+    warning.driver,
+    readRecommendedPlans().find((plan) => plan.marketKey === marketKey)?.rules.map((rule) => ({ id: rule.id, enabled: rule.enabled })) ?? [],
+  ).label;
   const rate = useMemo(
     () => buildLoanRateStatus({
       currentApr: liveInput.currentBorrowApr ?? null,
@@ -323,7 +479,7 @@ export default function RiskMonitor({
   const simulationView = simulation ? evaluateSimulation(simulation, liveInput) : null;
 
   async function refreshLive() {
-    if (!address) return;
+    if (!address) return null;
     setRefreshing(true);
     setRefreshError('');
     try {
@@ -343,19 +499,75 @@ export default function RiskMonitor({
         snapshot: positionRead.snapshot,
         blockNumber: positionRead.blockNumber,
       });
-      setLiveOverride({
+      const next = {
         venue: nextVenue,
         snapshot: positionRead.snapshot,
         usdc: Number(formatUnits(usdc, nextVenue.loanDecimals)),
         collateral: Number(formatUnits(collateralBalance, nextVenue.assetDecimals)),
         gas: Number(formatUnits(gasWei, 18)),
         at: Date.now(),
-      });
+        blockNumber: positionRead.blockNumber,
+      };
+      setLiveOverride(next);
+      return next;
     } catch {
       setRefreshError('Live position, oracle, rate, or wallet data could not be refreshed.');
+      return null;
     } finally {
       setRefreshing(false);
     }
+  }
+
+  async function reviewRemedy(card: PlannerCard, context: { targetHf: number; scenarioPrice: number | null; hypothetical: boolean }) {
+    setPlannerNotice('');
+    const fresh = await refreshLive();
+    if (!fresh || !address) return;
+    const freshPosition: PlannerPosition = {
+      collateralAmount: Number(formatUnits(fresh.snapshot.collateral, fresh.venue.assetDecimals)),
+      debt: Number(formatUnits(fresh.snapshot.debt, fresh.venue.loanDecimals)),
+      oraclePrice: fresh.venue.priceUsd,
+      liquidationThreshold: liveInput.liquidationThreshold,
+      healthFactor: fresh.snapshot.healthFactor,
+      walletDebt: fresh.usdc,
+      walletCollateral: fresh.collateral,
+      elsewhereDebt: liveInput.elsewhereDebtAsset ?? null,
+      elsewhereCollateral: liveInput.elsewhereCollateral ?? null,
+    };
+    const priced = context.hypothetical && context.scenarioPrice
+      ? { ...freshPosition, oraclePrice: context.scenarioPrice, healthFactor: null }
+      : freshPosition;
+    const next = buildPlannerCards(priced, context.targetHf).find((item) => item.type === card.type) ?? null;
+    const decision = reviewDecision({ previous: card, next, hypothetical: context.hypothetical });
+    if (!decision.proceed || !next) {
+      setPlannerNotice(decision.message ?? DRIFT_NOTICE);
+      return;
+    }
+    const step = next.type === 'MIXED'
+      ? { ...next, type: 'REPAY' as const, label: 'Repay', collateralAmount: 0, transactionCount: 1, projected: projectCustomAction(freshPosition, next.repayAmount, 0) }
+      : next;
+    const handoff = buildRemedyHandoff({
+      card: step,
+      position: freshPosition,
+      identity: { protocol: fresh.venue.protocol, chainId: fresh.venue.chainId, marketId: fresh.venue.id, wallet: address },
+      targetHF: context.targetHf,
+      calculatedAt: new Date().toISOString(),
+      sourceBlock: fresh.blockNumber.toString(),
+      scenarioOraclePrice: context.scenarioPrice ?? undefined,
+      hypothetical: context.hypothetical,
+      freshness: { position: 'fresh', oracle: fresh.venue.priceUsd > 0 ? 'fresh' : 'unavailable', walletBalances: 'fresh' },
+      notice: decision.message,
+    });
+    stageRemedyHandoff(window.sessionStorage, handoff);
+    appendPlannerHistory(window.sessionStorage, {
+      at: handoff.calculatedAt,
+      riskState: report.decision.currentState,
+      healthFactor: freshPosition.healthFactor,
+      oraclePrice: freshPosition.oraclePrice,
+      targetHF: context.targetHf,
+      repay: step.repayAmount,
+      collateral: step.collateralAmount,
+    });
+    router.push(`/?tab=${step.type === 'ADD_COLLATERAL' ? 'borrow' : 'repay'}&market=${encodeURIComponent(fresh.venue.id)}`);
   }
 
   function startSimulation(mode: SimulationMode) {
@@ -372,6 +584,7 @@ export default function RiskMonitor({
         <p className="font-semibold text-foreground">Risk monitor</p>
         <StatusBadge status={riskSeverityStatus(report.decision.currentState)} />
       </div>
+      <EarlyWarningCard warning={warning} alertLabel={alertLabel} onOpenPlanner={() => setTab('planner')} />
       {report.decision.currentState === 'NO_DEBT' && <p className="mt-1 text-muted-foreground">Liquidation alerts are not active for this market.</p>}
       <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
         <div>
@@ -424,6 +637,16 @@ export default function RiskMonitor({
       </div>
       <button type="button" className="mt-2 rounded border px-2 py-1" disabled={refreshing || !address} onClick={() => void refreshLive()}>{refreshing ? 'Refreshing live data…' : 'Refresh live data'}</button>
       {refreshError && <p className="mt-1 text-orange-800 dark:text-orange-300">{refreshError}</p>}
+      {correction.length > 0 && (
+        <div className="mt-3 space-y-1 rounded border p-2 sm:hidden">
+          <p className="font-semibold">{report.decision.currentState}</p>
+          <p>HF {hfText(report.snapshot.position.healthFactor)} · target {formatHealthFactor(report.thresholds.preferredHealthFactor)}</p>
+          {correction.filter((item) => item.type !== 'MIXED').map((item) => (
+            <p key={item.type}>{item.type === 'REPAY' ? `Repay ${formatUsdExact(item.repayAmount)} ${venue.loanSymbol}` : `Add ${item.collateralAmount.toLocaleString('en-US', { maximumFractionDigits: 8 })} ${venue.assetSymbol}`} · {item.feasibility === 'AVAILABLE' ? 'AVAILABLE' : item.feasibility === 'PARTIALLY_AVAILABLE' ? 'PARTIAL' : item.feasibility === 'UNKNOWN' ? 'UNKNOWN' : 'NOT AVAILABLE'}</p>
+          ))}
+          <button type="button" className="rounded border px-2 py-1" onClick={() => setTab('planner')}>Open action planner</button>
+        </div>
+      )}
       <div className="mt-3 flex gap-1 overflow-x-auto pb-1" role="tablist">
         {([
           ['safety', 'Safety'],
@@ -431,6 +654,7 @@ export default function RiskMonitor({
           ['readiness', 'Readiness'],
           ['planner', 'Action Planner'],
           ['whatif', 'What If'],
+          ['refinance', 'Refinance'],
           ['market', 'Market'],
         ] as const).map(([id, label]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id} className={`shrink-0 rounded border px-2 py-1 ${tab === id ? 'border-foreground font-semibold' : 'text-muted-foreground'}`} onClick={() => setTab(id)}>{label}</button>
@@ -513,12 +737,18 @@ export default function RiskMonitor({
             <p>HF {hfText(report.snapshot.position.healthFactor)} · Preferred minimum {formatHealthFactor(report.thresholds.preferredHealthFactor)}</p>
             {report.decision.nextRiskState && report.decision.nextHf !== null && (
               <div>
-                <p className="font-semibold">Next safety level</p>
+                <p className="font-semibold">Next boundary</p>
                 <p>{report.decision.nextRiskState} at HF {formatHealthFactor(report.decision.nextHf)}</p>
-                <p>Equivalent BTC/oracle price: {report.decision.nextBtcPrice === null ? '—' : formatUsd(report.decision.nextBtcPrice)}</p>
-                <p>Approximate decline from current oracle: {report.decision.distanceToNextState === null ? '—' : formatPercent(report.decision.distanceToNextState, 0)}</p>
+                <p>BTC distance {report.decision.distanceToNextState === null ? 'unavailable' : formatPercent(report.decision.distanceToNextState, 0)}</p>
+                <p>The position reaches {report.decision.nextRiskState} at BTC {report.decision.nextBtcPrice === null ? 'unavailable' : formatUsd(report.decision.nextBtcPrice)}.</p>
               </div>
             )}
+            <div className="flex flex-wrap items-center gap-2">
+              <span>HF trend</span>
+              <span>{warning.hfDirection ?? 'unavailable'}</span>
+              <span>{warning.snapshot.position.hfChange24h === undefined ? '24h unavailable' : `${warning.snapshot.position.hfChange24h > 0 ? '+' : ''}${warning.snapshot.position.hfChange24h.toFixed(2)} over 24h`}</span>
+            </div>
+            {warning.pace.shown && warning.pace.text && <p>{warning.pace.label}: {warning.pace.text}. {warning.pace.disclaimer}</p>}
             <details>
               <summary className="cursor-pointer">View all thresholds</summary>
               <div className="mt-2 space-y-1">
@@ -551,7 +781,7 @@ export default function RiskMonitor({
               {' · '}7d average {report.snapshot.market.avg7d === null ? 'unavailable' : formatApr(report.snapshot.market.avg7d)}
               {report.snapshot.market.avg30d !== null && ` · 30d average ${formatApr(report.snapshot.market.avg30d)}`}
             </p>
-            <p>1h {report.aprChange1h === null ? 'unavailable' : formatApr(report.aprChange1h)} · 6h {report.aprChange6h === null ? 'unavailable' : formatApr(report.aprChange6h)} · 24h change {report.aprChange24h === null ? 'unavailable' : formatApr(report.aprChange24h)}</p>
+            <RateTrendDetail warning={warning} />
             <div className="flex flex-wrap items-center gap-1">
               <span>Versus financing benchmark</span>
               <StatusBadge status={benchmarkStatus(report.rateStatus)} />
@@ -567,10 +797,7 @@ export default function RiskMonitor({
               <span className="font-semibold">Market stress</span>
               <StatusBadge status={marketStressPresentation(report.marketStress)} />
             </div>
-            <p>Utilization {typeof report.snapshot.market.utilization === 'number' ? formatPercent(report.snapshot.market.utilization, 0) : 'not published for this market'}
-              {report.utilizationChange === null ? '' : ` · recent change ${formatPercent(report.utilizationChange, 0)}`}
-            </p>
-            <p>Available liquidity {report.snapshot.market.availableLiquidity === null ? '—' : formatUsd(report.snapshot.market.availableLiquidity)}</p>
+            <MarketIntelligence warning={warning} />
           </section>
           <section className={tab === 'readiness' ? 'space-y-2' : 'hidden'}>
             <p className="font-semibold">Current situation</p>
@@ -604,39 +831,18 @@ export default function RiskMonitor({
               <p>Available elsewhere — transfer/bridge required. {otherUsdc.symbol} {report.snapshot.resources.elsewhereDebtAsset ?? 0} · collateral {report.snapshot.resources.elsewhereCollateral ?? 0} on {chainLabel(otherChain)}.</p>
             )}
           </section>
-          <section className={tab === 'planner' ? 'space-y-1' : 'hidden'}>
-            <p className="font-semibold">Action planner</p>
-            <p className="text-muted-foreground">These amounts are analysis only. Nothing is sent to the wallet.</p>
-            {report.remedyMessage && <p>{report.remedyMessage}</p>}
-            {!report.remedyMessage && report.decision.currentState === 'NORMAL' && (
-              <div className="space-y-1">
-                <StatusBadge status={riskSeverityStatus('NORMAL')} />
-                <p>No corrective action required</p>
-                <p>Current HF {hfText(report.snapshot.position.healthFactor)} · Preferred HF {formatHealthFactor(report.thresholds.preferredHealthFactor)}</p>
-                <p>Current debt {formatUsdExact(report.snapshot.position.totalDebt)} · Current collateral {tokenText(report.snapshot.position.collateralAmount)} {venue.assetSymbol}</p>
-                <div className="flex flex-wrap gap-2">
-                  <button type="button" className="rounded border px-2 py-1" onClick={() => { setTab('whatif'); startSimulation('repay'); }}>Simulate repayment</button>
-                  <button type="button" className="rounded border px-2 py-1" onClick={() => { setTab('whatif'); startSimulation('collateral'); }}>Simulate adding collateral</button>
-                  <button type="button" className="rounded border px-2 py-1" onClick={() => { setTab('whatif'); startSimulation('repay'); }}>Stress BTC price</button>
-                  <button type="button" className="rounded border px-2 py-1" onClick={() => setTab('whatif')}>Explore preventative action</button>
-                </div>
-              </div>
-            )}
-            {!report.remedyMessage && report.decision.currentState !== 'NORMAL' && report.remedies.length === 0 && <p>No repayment or collateral is required to hold the preferred health factor.</p>}
-            {report.remedies.map((remedy) => (
-              <div key={remedy.type}>
-                <p>
-                  {remedy.label}
-                  {remedy.repayAmount !== undefined && ` · repay ${formatUsdExact(remedy.repayAmount)} ${venue.loanSymbol}`}
-                  {remedy.collateralAmount !== undefined && ` · add ${remedy.collateralAmount.toLocaleString('en-US', { maximumFractionDigits: 8 })} ${venue.assetSymbol}`}
-                  {' · '}resulting HF {remedy.projectedPosition.healthFactor === null ? '—' : formatHealthFactor(remedy.projectedPosition.healthFactor)}
-                  {' · '}LTV {remedy.projectedPosition.ltv === null ? '—' : formatLtv(remedy.projectedPosition.ltv)}
-                  {' · '}liquidation {remedy.projectedPosition.liquidationPrice === null ? '—' : formatUsd(remedy.projectedPosition.liquidationPrice)}
-                  {' · '}cushion {remedy.projectedPosition.liquidationCushionPercent === null ? '—' : formatPercent(remedy.projectedPosition.liquidationCushionPercent, 0)}
-                </p>
-                <StatusBadge status={feasibilityStatus(remedy.feasibility)} />
-              </div>
-            ))}
+          <section className={tab === 'planner' ? '' : 'hidden'}>
+            <ActionPlanner
+              report={report}
+              position={plannerPosition}
+              debtSymbol={venue.loanSymbol}
+              collateralSymbol={venue.assetSymbol}
+              chainName={chainLabel(venue.chainId)}
+              refreshing={refreshing}
+              notice={plannerNotice}
+              primaryDriver={warning.driver}
+              onReview={(card, context) => void reviewRemedy(card, context)}
+            />
           </section>
           <section className={tab === 'whatif' ? 'space-y-2' : 'hidden'}>
             <p className="font-semibold">What-if simulator</p>
@@ -667,6 +873,26 @@ export default function RiskMonitor({
                 <p key={row.label}>{row.label} {formatApr(row.apr)} · {formatUsdExact(row.monthlyInterest)}/mo · {formatUsdExact(row.annualInterest)}/yr · vs benchmark {row.spreadToBenchmark === null ? '—' : formatApr(row.spreadToBenchmark)} · vs opening {row.differenceVsOpening === null ? '—' : formatApr(row.differenceVsOpening)}</p>
               ))}
             </div>
+          </section>
+          <section className={tab === 'refinance' ? '' : 'hidden'}>
+            <RefinancePanel
+              sourceVenue={shownVenue}
+              allVenues={allVenues}
+              debt={liveInput.totalDebt}
+              collateralAmount={liveInput.collateralAmount}
+              oraclePrice={liveInput.oraclePrice ?? 0}
+              liquidationThreshold={liveInput.liquidationThreshold}
+              currentApr={liveInput.currentBorrowApr ?? 0}
+              openingApr={openingApr}
+              healthFactor={report.snapshot.position.healthFactor}
+              ltv={report.snapshot.position.ltv}
+              liquidationPrice={report.snapshot.position.liquidationPrice}
+              liquidationCushion={report.snapshot.position.liquidationCushionPercent}
+              benchmarkApr={liveInput.benchmarkApr}
+              gasPriceWei={gas.feePerGas}
+              ethPriceUsd={ethPriceUsd}
+              sourceFreshness={report.domains.position === 'fresh' && report.domains.oracle === 'fresh' ? 'fresh' : 'stale'}
+            />
           </section>
       </div>
     </div>

@@ -17,6 +17,8 @@ function readPayload(body: unknown): RatesPayload | null {
   return {
     fetchedAt: row.fetchedAt,
     btcPriceUsd: typeof row.btcPriceUsd === 'number' ? row.btcPriceUsd : 0,
+    referenceBtcUsd: typeof row.referenceBtcUsd === 'number' && row.referenceBtcUsd > 0 ? row.referenceBtcUsd : undefined,
+    wrapperBtcUsd: typeof row.wrapperBtcUsd === 'number' && row.wrapperBtcUsd > 0 ? row.wrapperBtcUsd : undefined,
     warnings: Array.isArray(row.warnings) ? row.warnings.filter((item) => typeof item === 'string') : [],
     venues: dedupeVenues(venues),
   };
