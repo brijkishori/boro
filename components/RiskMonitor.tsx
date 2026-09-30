@@ -49,6 +49,7 @@ import { ETH_USD_FEED, feedAbi, parseFeedUsd } from '@/lib/prices';
 import { useRates } from '@/components/useRates';
 import RefinancePanel from '@/components/RefinancePanel';
 import ActionPlanner from '@/components/ActionPlanner';
+import EmergencyConsole from '@/components/EmergencyConsole';
 import EarlyWarningCard, { MarketIntelligence, RateTrendDetail } from '@/components/EarlyWarningCard';
 import { alertForDriver, buildEarlyWarning, type TrendSample } from '@/lib/finance/earlyWarning';
 import { readTrendSamples, sameTrendSamples, writeTrendSample } from '@/lib/finance/trendStore';
@@ -283,7 +284,7 @@ export default function RiskMonitor({
   });
   const [aprInput, setAprInput] = useState('');
   const [simulation, setSimulation] = useState<SimulationState | null>(null);
-  const [tab, setTab] = useState<'safety' | 'rates' | 'readiness' | 'planner' | 'whatif' | 'refinance' | 'market'>('safety');
+  const [tab, setTab] = useState<'safety' | 'rates' | 'readiness' | 'planner' | 'emergency' | 'whatif' | 'refinance' | 'market'>('safety');
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState('');
   const [liveOverride, setLiveOverride] = useState<{
@@ -653,6 +654,7 @@ export default function RiskMonitor({
           ['rates', 'Rates'],
           ['readiness', 'Readiness'],
           ['planner', 'Action Planner'],
+          ['emergency', 'Emergency Actions'],
           ['whatif', 'What If'],
           ['refinance', 'Refinance'],
           ['market', 'Market'],
@@ -842,6 +844,22 @@ export default function RiskMonitor({
               notice={plannerNotice}
               primaryDriver={warning.driver}
               onReview={(card, context) => void reviewRemedy(card, context)}
+            />
+          </section>
+          <section className={tab === 'emergency' ? '' : 'hidden'}>
+            <EmergencyConsole
+              report={report}
+              input={liveInput}
+              walletResources={{
+                debtAssetAvailable: liveInput.walletDebtAssetBalance ?? null,
+                collateralAvailable: liveInput.walletCollateralBalance ?? null,
+                nativeGasAvailable: liveInput.nativeGasBalance ?? null,
+                gasRequired: liveInput.gasRequired ?? null,
+                debtAssetAllowance: null, // to be estimated later
+                collateralAllowance: null, // to be estimated later
+              }}
+              networkContext={{ chainId: venue.chainId, marketId: venue.id, gasPriceWei: undefined }}
+              warning={warning}
             />
           </section>
           <section className={tab === 'whatif' ? 'space-y-2' : 'hidden'}>

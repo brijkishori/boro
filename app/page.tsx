@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { takeRemedyHandoff, type RemedyHandoff } from '@/lib/finance/actionPlanner';
 import { useAccount, useConnect } from 'wagmi';
 import type { Address } from 'viem';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import BorrowFlow from '@/components/BorrowFlow';
@@ -57,6 +57,8 @@ function Dashboard() {
   const marketParam = search.get('market');
   const urlMode: Mode | null = tabParam === 'borrow' || tabParam === 'lend' || tabParam === 'repay' ? tabParam : null;
   const [modeOverride, setModeOverride] = useState<Mode | null>(null);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const [filter, setFilter] = useState<AssetFilter>('all');
   const [selectedOverride, setSelectedOverride] = useState<string | null>(null);
   const [pinned, setPinned] = useState(Boolean(marketParam));
@@ -66,7 +68,9 @@ function Dashboard() {
   const started = useRef(false);
   const [handoff, setHandoff] = useState<RemedyHandoff | null>(null);
   const planner = useSyncExternalStore(subscribePlanner, plannerSnapshot, plannerServerSnapshot);
-  const mode = modeOverride ?? urlMode ?? 'borrow';
+  
+  // Use a deterministic initial mode for SSR and first render to prevent Radix ID mismatch.
+  const mode = modeOverride ?? (mounted ? urlMode : null) ?? 'borrow';
   const selectedId = selectedOverride ?? marketParam;
 
   useEffect(() => {
@@ -294,35 +298,41 @@ function Dashboard() {
           <TabsTrigger value="lend" className="text-sm font-bold">Lend</TabsTrigger>
           <TabsTrigger value="repay" className="text-sm font-bold">Repay</TabsTrigger>
         </TabsList>
-      </Tabs>
 
-      <section id="execution-workflow">
-        {mode === 'borrow' && !selected && (
-          <Card>
-            <CardContent className="space-y-3 p-4">
-              <p className="text-sm font-semibold">Select a market to continue</p>
-              <p className="text-xs text-muted-foreground">
-                Choose a market above to set the protocol, chain, and assets. A saved planning scenario stays separate until you load it.
-              </p>
-              <Button type="button" className="h-11" onClick={() => scrollToId('top-markets')}>Compare markets</Button>
-            </CardContent>
-          </Card>
-        )}
-        {mode === 'borrow' && selected && (
-          <BorrowFlow
-            key={selected.id}
-            quote={selected}
-            fetchedAt={payload?.fetchedAt ?? 0}
-            venues={ranked}
-            onSelect={chooseVenue}
-            initialCollateral={scenario?.collateralAmount}
-            initialBorrowUsd={scenario?.borrowAmount}
-            handoff={handoff && selected && handoff.marketId === selected.id && handoff.type === 'ADD_COLLATERAL' ? handoff : null}
-          />
-        )}
-        {mode === 'lend' && <LendFlow key={selected?.id ?? 'lend'} quote={selected} fetchedAt={payload?.fetchedAt ?? 0} venues={ranked} onSelect={chooseVenue} />}
-        {mode === 'repay' && <RepayFlow key={selected?.id ?? 'repay'} quote={selected} venues={ranked} onSelect={chooseVenue} handoff={handoff && selected && handoff.marketId === selected.id && handoff.type === 'REPAY' ? handoff : null} />}
-      </section>
+        <section id="execution-workflow">
+          <TabsContent value="borrow">
+            {!selected && (
+              <Card>
+                <CardContent className="space-y-3 p-4">
+                  <p className="text-sm font-semibold">Select a market to continue</p>
+                  <p className="text-xs text-muted-foreground">
+                    Choose a market above to set the protocol, chain, and assets. A saved planning scenario stays separate until you load it.
+                  </p>
+                  <Button type="button" className="h-11" onClick={() => scrollToId('top-markets')}>Compare markets</Button>
+                </CardContent>
+              </Card>
+            )}
+            {selected && (
+              <BorrowFlow
+                key={selected.id}
+                quote={selected}
+                fetchedAt={payload?.fetchedAt ?? 0}
+                venues={ranked}
+                onSelect={chooseVenue}
+                initialCollateral={scenario?.collateralAmount}
+                initialBorrowUsd={scenario?.borrowAmount}
+                handoff={handoff && selected && handoff.marketId === selected.id && handoff.type === 'ADD_COLLATERAL' ? handoff : null}
+              />
+            )}
+          </TabsContent>
+          <TabsContent value="lend">
+            <LendFlow key={selected?.id ?? 'lend'} quote={selected} fetchedAt={payload?.fetchedAt ?? 0} venues={ranked} onSelect={chooseVenue} />
+          </TabsContent>
+          <TabsContent value="repay">
+            <RepayFlow key={selected?.id ?? 'repay'} quote={selected} venues={ranked} onSelect={chooseVenue} handoff={handoff && selected && handoff.marketId === selected.id && handoff.type === 'REPAY' ? handoff : null} />
+          </TabsContent>
+        </section>
+      </Tabs>
 
       <details className="rounded-xl border bg-card px-4 py-3">
         <summary className="cursor-pointer text-sm font-semibold">Convert Bitcoin and fee history</summary>
