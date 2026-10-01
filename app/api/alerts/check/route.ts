@@ -25,6 +25,7 @@ import {
 import { snapshotRates } from '@/lib/rateHistory';
 import { getRates } from '@/lib/rates';
 import { publicClient } from '@/lib/rpc';
+import { fetchUsdPrices } from '@/lib/prices';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -244,7 +245,7 @@ async function observedTrendLines(
   }
 }
 
-async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: boolean, contexts: Map<string, VenueRateContext>) {
+async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: boolean, contexts: Map<string, VenueRateContext>, ethPriceUsd?: number | null) {
   const messages: AlertCopy[] = [];
   const statementRows: string[] = [];
   const weeklyPositions: DigestPosition[] = [];
@@ -284,6 +285,7 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
       const openDebt = isOpenDebt(debtUsd);
       const positionName = `${facts.protocol} · ${facts.asset} · ${facts.chain}`;
       let monthSummary: ReturnType<typeof summarizeEpisodePeriod> | null = null;
+      let openingApr: number | null = null;
       if (openDebt) {
         const key = episodeKey(subscriber.address, venue);
         const weekSummary = summarizeEpisodePeriod({
@@ -306,7 +308,7 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
         projectedNext7Usd += projected.next7Days ?? 0;
         if (weekSummary.actual.usd !== null) measuredWeekUsd += weekSummary.actual.usd;
         totalDebtUsd += debtUsd;
-        const openingApr = loanRateHistory(ledgerEvents, key).opening?.normalizedBorrowApr ?? null;
+        openingApr = loanRateHistory(ledgerEvents, key).opening?.normalizedBorrowApr ?? null;
         weeklyPositions.push(digestPosition(positionName, venue, snapshot, debtUsd, weekSummary, openingApr));
         monthlyPositions.push(digestPosition(positionName, venue, snapshot, debtUsd, monthSummary, openingApr));
       } else if (snapshot.collateral > 0n) {
@@ -364,6 +366,13 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
         messages.push(aprAlert(subscriber.address, facts));
       }
       if (debtUsd > 0 && snapshot.collateral > 0n) {
+        let gasPriceWei: bigint | null = null;
+        try {
+          gasPriceWei = await publicClient(venue.chainId).getGasPrice();
+        } catch {
+          gasPriceWei = null;
+        }
+
         const actionable = findActionableRefinanceOpportunity({
           sourceVenue: venue,
           snapshot,
@@ -372,15 +381,43 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
             minYearlySavingsUsd: subscriber.rules.refinanceUsd,
             minHealthFactor: subscriber.rules.healthUrgent ?? 1.2,
           },
+          gasPriceWei,
+          ethPriceUsd,
+          openingApr,
+          benchmarkApr: plan?.benchmarkApr,
           now,
         });
 
         if (actionable && actionable.isQualified) {
-          // Recheck before email against fresh venues
+          // Pre-send revalidation: requalify from fresh position/debt, fresh gas price, and current venues immediately before sending
+          let freshDebt = debtUsd;
+          let freshCollateral = Number(formatUnits(snapshot.collateral, venue.assetDecimals));
+          try {
+            const reloaded = await readPosition(venue, subscriber.address as Address);
+            if (reloaded) {
+              freshDebt = Number(formatUnits(reloaded.debt, venue.loanDecimals));
+              freshCollateral = Number(formatUnits(reloaded.collateral, venue.assetDecimals));
+            }
+          } catch {
+            // retain existing snapshot if reread fails
+          }
+
+          let freshGasPrice = gasPriceWei;
+          try {
+            freshGasPrice = await publicClient(venue.chainId).getGasPrice();
+          } catch {
+            // keep gasPriceWei
+          }
+
           const rechecked = recheckRefinanceCandidate(actionable, venues, {
             minYearlySavingsUsd: subscriber.rules.refinanceUsd,
             minHealthFactor: subscriber.rules.healthUrgent ?? 1.2,
-          }, Date.now());
+          }, Date.now(), {
+            currentDebt: freshDebt,
+            currentCollateral: freshCollateral,
+            gasPriceWei: freshGasPrice,
+            ethPriceUsd,
+          });
 
           if (rechecked.isQualified) {
             const dedupe = await evaluateRefinanceAlertDeduplication(subscriber.address, rechecked, record, now);
@@ -465,8 +502,11 @@ export async function POST(request: Request) {
     }
   }
 
+  const usdPrices = await fetchUsdPrices().catch(() => ({ ethUsd: 0, btcUsd: 0 }));
+  const ethPriceUsd = usdPrices.ethUsd > 0 ? usdPrices.ethUsd : null;
+
   for (const subscriber of subscribers.slice(0, 25)) {
-    const messages = await evaluate(subscriber, rates.venues, !dry, contexts);
+    const messages = await evaluate(subscriber, rates.venues, !dry, contexts, ethPriceUsd);
     if (messages.length === 0) continue;
     for (const message of messages) {
       preview.push({ email: subscriber.email, kind: message.kind, subject: message.subject });

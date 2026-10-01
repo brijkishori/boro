@@ -20,6 +20,7 @@ export type QualificationStatus = 'QUALIFIED_FOR_REVIEW' | 'NOT_QUALIFIED';
 
 export type QualificationReason =
   | 'QUALIFIED'
+  | 'ZERO_DEBT'
   | 'RATE_NOT_LOWER'
   | 'NO_MEANINGFUL_SAVINGS'
   | 'INSUFFICIENT_LIQUIDITY'
@@ -108,6 +109,11 @@ export function qualifyRefinancePlan(
   const minHealthFactor = criteria?.minHealthFactor ?? DEFAULT_QUALIFICATION_CRITERIA.minHealthFactor;
 
   const reasons: QualificationReason[] = [];
+
+  // 0. Zero-debt guard: A position with no current debt must never qualify
+  if (plan.debt <= 0) {
+    reasons.push('ZERO_DEBT');
+  }
 
   // 1. Source market verified
   if (!plan.sourceMarket.id || plan.sourceMarket.freshness === 'unavailable') {
@@ -325,6 +331,13 @@ export function recheckRefinanceCandidate(
   freshVenues: Venue[],
   criteria?: RefinanceAlertQualificationCriteria,
   now = Date.now(),
+  options?: {
+    currentDebt?: number;
+    currentCollateral?: number;
+    gasPriceWei?: bigint | number | null;
+    ethPriceUsd?: number | null;
+    benchmarkApr?: number | null;
+  },
 ): RefinanceQualification {
   const sourceVenue = freshVenues.find((v) => v.id === qualification.plan.sourceMarket.id);
   const candidateVenue = freshVenues.find((v) => v.id === qualification.plan.destinationMarket.id);
@@ -340,8 +353,15 @@ export function recheckRefinanceCandidate(
   }
 
   const prevPlan = qualification.plan;
-  const oraclePrice = sourceVenue.priceUsd > 0 ? sourceVenue.priceUsd : prevPlan.sourceMarket.oraclePrice;
-  const sourceThreshold = sourceVenue.collateralRisk?.liquidationLtv ?? sourceVenue.collateralRisk?.liquidationThreshold ?? sourceVenue.maxLtv;
+  const debt = options?.currentDebt !== undefined ? options.currentDebt : prevPlan.debt;
+  const collateral = options?.currentCollateral !== undefined ? options.currentCollateral : prevPlan.collateral;
+  const gasPriceWei = options?.gasPriceWei !== undefined ? options.gasPriceWei : prevPlan.gasPriceWei;
+  const ethPriceUsd = options?.ethPriceUsd !== undefined ? options.ethPriceUsd : prevPlan.ethPriceUsd;
+  const benchmarkApr = options?.benchmarkApr !== undefined ? options.benchmarkApr : prevPlan.benchmark?.benchmarkApr;
+
+  // Enforce fresh oracle price: if current oracle price is missing/<=0, do not fall back to old projection
+  const oraclePrice = sourceVenue.priceUsd > 0 ? sourceVenue.priceUsd : 0;
+  const sourceThreshold = sourceVenue.collateralRisk?.liquidationLtv ?? sourceVenue.collateralRisk?.liquidationThreshold ?? sourceVenue.maxLtv ?? 0;
 
   const isSourceStale = Boolean(sourceVenue.freshness?.fetchedAt && (now - sourceVenue.freshness.fetchedAt > STALE_THRESHOLD_MS));
   const sourceFreshness: FreshnessState = isSourceStale
@@ -350,13 +370,16 @@ export function recheckRefinanceCandidate(
 
   const freshSourceBaseline: RefinanceMarketBaseline = {
     ...prevPlan.sourceMarket,
+    debt,
+    collateralAmount: collateral,
+    collateralValueUsd: collateral * oraclePrice,
     currentApr: sourceVenue.borrowApr,
     oraclePrice,
     availableLiquidity: sourceVenue.liquidityUsd ?? null,
     freshness: sourceFreshness,
     safety: calculateSafetyProjection(
-      prevPlan.debt,
-      prevPlan.collateral,
+      debt,
+      collateral,
       oraclePrice,
       sourceThreshold,
     ),
@@ -377,6 +400,9 @@ export function recheckRefinanceCandidate(
   const freshPlan = buildMigrationPlan({
     sourceMarket: freshSourceBaseline,
     destinationMarket: freshCandidate,
+    gasPriceWei,
+    ethPriceUsd,
+    benchmarkApr,
     now,
   });
 

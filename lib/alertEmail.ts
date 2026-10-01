@@ -209,7 +209,7 @@ function wrapRefinanceEmailHtml(input: {
     <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase">Estimated economics</p>
     <ul style="margin:0;padding-left:1.2rem;line-height:1.6">
       <li>~${escapeHtml(input.monthlySavings)}/mo lower borrowing cost</li>
-      <li>~${escapeHtml(input.annualSavings)}/yr</li>
+      <li>~${escapeHtml(input.annualSavings)}/yr lower borrowing cost</li>
       <li>Migration cost: ${escapeHtml(input.migrationCost)}</li>
       <li>Estimated break-even: ${escapeHtml(input.breakEven)}</li>
     </ul>
@@ -303,7 +303,7 @@ export function refinanceAlert(
       '',
       'Estimated economics:',
       `~$${snapshot.estimatedMonthlyDifference.toFixed(2)}/mo lower borrowing cost`,
-      `~$${snapshot.estimatedAnnualDifference.toFixed(2)}/yr`,
+      `~$${snapshot.estimatedAnnualDifference.toFixed(2)}/yr lower borrowing cost`,
       `Migration cost: ${snapshot.migrationCostUsd !== null ? formatUsdExact(snapshot.migrationCostUsd) : 'Unknown'}`,
       `Estimated break-even: ${breakEvenDisplay}`,
       '',

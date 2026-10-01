@@ -151,6 +151,8 @@ export type MigrationPlan = {
   holdingScenarios: StaticScenarioResult[];
   freshness: FreshnessState;
   isStale: boolean;
+  gasPriceWei?: bigint | number | null;
+  ethPriceUsd?: number | null;
   calculatedAt: number;
 };
 
@@ -563,6 +565,8 @@ export function buildMigrationPlan(input: {
     holdingScenarios,
     freshness,
     isStale,
+    gasPriceWei: input.gasPriceWei ?? null,
+    ethPriceUsd: input.ethPriceUsd ?? null,
     calculatedAt: now,
   };
 }

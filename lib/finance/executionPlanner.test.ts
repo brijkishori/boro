@@ -256,7 +256,7 @@ describe('Emergency Execution Planner Foundation', () => {
   });
 
   it('M. projected after-state uses same finance math as Risk Monitor', () => {
-    const remedyMath = repayToTargetHF({ ...baseInput, debt: baseInput.totalDebt, targetHf: 2.5, actionable: true });
+    const remedyMath = repayToTargetHF({ collateralAmount: baseInput.collateralAmount, debt: baseInput.totalDebt, oraclePrice: baseInput.oraclePrice, liquidationThreshold: baseInput.liquidationThreshold, targetHf: 2.5, actionable: true });
     const remedy: ProposedRemedy = {
       type: 'REPAY',
       targetHF: 2.5,
