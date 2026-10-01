@@ -3,7 +3,7 @@ import { liveSplit, type LoanEpisode } from '@/lib/audit';
 import type { ChainId, ProtocolId } from '@/lib/protocol';
 import { distanceToLiquidation } from '@/lib/finance/ltv';
 import { aprChangeVisual, aprMovement, type AprChangeVisual, type AprMovement } from '@/lib/finance/openingApr';
-import { classifyPositionRisk, positionIsFresh, resolveRiskThresholds, type RiskSeverity } from '@/lib/finance/riskMonitor';
+import { classifyPositionRisk, currentRiskDecision, positionIsFresh, resolveRiskThresholds, type CurrentRiskDecision, type RiskSeverity } from '@/lib/finance/riskMonitor';
 
 export const METRIC_HINTS = {
   healthFactor: 'Higher is safer. HF 1.0 is the liquidation boundary.',
@@ -53,6 +53,7 @@ export type ActiveLoanView = {
   rate: LoanRateStatus;
   riskState: RiskSeverity;
   fresh: boolean;
+  decision?: CurrentRiskDecision;
 };
 
 export function buildLoanRateStatus(input: {
@@ -142,6 +143,7 @@ export function buildActiveLoanView(input: {
   episode?: LoanEpisode | null;
   fetchedAt?: number | null;
   positionReadFailed?: boolean;
+  liquidationThreshold?: number;
 }): ActiveLoanView {
   const collateralAmount = Number(formatUnits(input.collateral, input.assetDecimals));
   const totalDebtUsd = Number(formatUnits(input.debt, input.loanDecimals));
@@ -162,6 +164,21 @@ export function buildActiveLoanView(input: {
     lifecycleId: input.lifecycleId,
     fresh,
   });
+  const thresholds = resolveRiskThresholds({});
+  const liquidationThreshold = input.liquidationThreshold ?? (
+    totalDebtUsd > 0 && collateralAmount > 0 && input.liquidationPrice > 0
+      ? totalDebtUsd / (collateralAmount * input.liquidationPrice)
+      : 0
+  );
+  const decision = currentRiskDecision({
+    healthFactor: input.healthFactor,
+    debt: totalDebtUsd,
+    collateralAmount,
+    oraclePrice: input.priceUsd > 0 ? input.priceUsd : null,
+    liquidationThreshold,
+    thresholds,
+    safetyFresh: fresh,
+  });
   return {
     id: input.id,
     lifecycleId: input.lifecycleId,
@@ -181,7 +198,8 @@ export function buildActiveLoanView(input: {
     liquidationPriceUsd: input.liquidationPrice,
     liquidationCushion: distanceToLiquidation(input.priceUsd, input.liquidationPrice),
     rate,
-    riskState: classifyPositionRisk(input.healthFactor, totalDebtUsd, fresh, resolveRiskThresholds({})),
+    riskState: decision.currentState,
     fresh,
+    decision,
   };
 }

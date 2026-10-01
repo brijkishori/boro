@@ -43,6 +43,7 @@ function loanView(position: OpenPosition, events: ReturnType<typeof useAudit>['e
     ltv: snapshot.ltv,
     healthFactor: snapshot.healthFactor,
     liquidationPrice: snapshot.liquidationPrice,
+    liquidationThreshold: venue.collateralRisk?.liquidationLtv ?? venue.collateralRisk?.liquidationThreshold ?? venue.maxLtv,
     currentApr: venue.borrowApr,
     openingApr: history.opening?.normalizedBorrowApr ?? null,
     episode,

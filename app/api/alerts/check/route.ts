@@ -15,7 +15,13 @@ import { aprAlert, healthAlert, liquidationAlert, loanFacts, monthlyAlert, refin
 import { allSubscribers, saveSubscriber, shouldSend, type AlertSubscriber } from '@/lib/alerts';
 import { sendMail } from '@/lib/mail';
 import { formatApr, formatUsdExact } from '@/lib/amount';
-import { refinanceHint } from '@/lib/opportunities';
+import {
+  buildRefinanceDeepLink,
+  evaluateRefinanceAlertDeduplication,
+  findActionableRefinanceOpportunity,
+  recheckRefinanceCandidate,
+  recordRefinanceDisqualified,
+} from '@/lib/finance/refinanceAlertQualification';
 import { snapshotRates } from '@/lib/rateHistory';
 import { getRates } from '@/lib/rates';
 import { publicClient } from '@/lib/rpc';
@@ -357,15 +363,37 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
       if (!coversRate && venue.borrowApr >= subscriber.rules.aprAbove && await shouldSend(subscriber.address, 'apr', venue.id, 24, record)) {
         messages.push(aprAlert(subscriber.address, facts));
       }
-      const hint = refinanceHint({ venue, snapshot }, venues);
-      if (hint && hint.yearlyUsd >= subscriber.rules.refinanceUsd && await shouldSend(subscriber.address, 'refi', venue.id, 24, record)) {
-        messages.push(refinanceAlert(subscriber.address, facts, {
-          toProtocol: protocolLabel(hint.to.protocol),
-          toChain: chainLabel(hint.to.chainId),
-          toApr: formatApr(hint.to.borrowApr),
-          yearly: formatUsdExact(hint.yearlyUsd),
-          monthly: formatUsdExact(hint.monthlyUsd),
-        }));
+      if (debtUsd > 0 && snapshot.collateral > 0n) {
+        const actionable = findActionableRefinanceOpportunity({
+          sourceVenue: venue,
+          snapshot,
+          allVenues: venues,
+          criteria: {
+            minYearlySavingsUsd: subscriber.rules.refinanceUsd,
+            minHealthFactor: subscriber.rules.healthUrgent ?? 1.2,
+          },
+          now,
+        });
+
+        if (actionable && actionable.isQualified) {
+          // Recheck before email against fresh venues
+          const rechecked = recheckRefinanceCandidate(actionable, venues, {
+            minYearlySavingsUsd: subscriber.rules.refinanceUsd,
+            minHealthFactor: subscriber.rules.healthUrgent ?? 1.2,
+          }, Date.now());
+
+          if (rechecked.isQualified) {
+            const dedupe = await evaluateRefinanceAlertDeduplication(subscriber.address, rechecked, record, now);
+            if (dedupe.shouldSend) {
+              const deepLink = buildRefinanceDeepLink(venue.id, rechecked.snapshot.destinationMarketId);
+              messages.push(refinanceAlert(subscriber.address, rechecked, { deepLinkUrl: deepLink, now }));
+            }
+          } else if (record) {
+            await recordRefinanceDisqualified(subscriber.address, venue.id, actionable.snapshot.destinationMarketId);
+          }
+        } else if (record) {
+          await recordRefinanceDisqualified(subscriber.address, venue.id);
+        }
       }
       if (subscriber.rules.thresholdUsd > 0 && debtUsd > 0) {
         const last = subscriber.lastThresholdUsd ?? 0;

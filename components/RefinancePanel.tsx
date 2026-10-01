@@ -1,9 +1,10 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { formatApr, formatUsd } from '@/lib/amount';
 import { formatHealthFactor, formatPercent } from '@/lib/finance/format';
 import { chainLabel, protocolLabel, type Venue } from '@/lib/protocol';
+import { qualifyRefinancePlan } from '@/lib/finance/refinanceAlertQualification';
 import {
   buildMigrationPlan,
   calculateRateStability,
@@ -29,6 +30,7 @@ interface RefinancePanelProps {
   gasPriceWei?: number | bigint | null;
   ethPriceUsd?: number | null;
   sourceFreshness?: 'fresh' | 'stale' | 'unavailable';
+  targetCandidateId?: string | null;
 }
 
 export default function RefinancePanel({
@@ -48,9 +50,10 @@ export default function RefinancePanel({
   gasPriceWei,
   ethPriceUsd,
   sourceFreshness = 'fresh',
+  targetCandidateId,
 }: RefinancePanelProps) {
-  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
-  const [expandedDetailsId, setExpandedDetailsId] = useState<string | null>(null);
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(targetCandidateId ?? null);
+  const [expandedDetailsId, setExpandedDetailsId] = useState<string | null>(targetCandidateId ?? null);
   const [customDaysInput, setCustomDaysInput] = useState<string>('60');
   const [activeScenarioDays, setActiveScenarioDays] = useState<number>(90);
 
@@ -131,6 +134,19 @@ export default function RefinancePanel({
       .filter((p) => p.rateDirection === 'lower')
       .sort((a, b) => a.destinationMarket.currentApr - b.destinationMarket.currentApr)[0];
   }, [wrapperPlans, crossChainPlans]);
+
+  useEffect(() => {
+    if (targetCandidateId) {
+      setSelectedCandidateId(targetCandidateId);
+      setExpandedDetailsId(targetCandidateId);
+      if (wrapperPlans.some((p) => p.destinationMarket.id === targetCandidateId)) {
+        setShowWrapperChange(true);
+      }
+      if (crossChainPlans.some((p) => p.destinationMarket.id === targetCandidateId)) {
+        setShowCrossChain(true);
+      }
+    }
+  }, [targetCandidateId, wrapperPlans, crossChainPlans]);
 
   return (
     <div className="space-y-4">
@@ -253,14 +269,22 @@ export default function RefinancePanel({
             const isSelected = selectedCandidateId === plan.destinationMarket.id;
             const isDetailsOpen = expandedDetailsId === plan.destinationMarket.id;
             const dest = plan.destinationMarket;
+            const qualification = qualifyRefinancePlan(plan);
+            const isQualified = qualification.status === 'QUALIFIED_FOR_REVIEW';
+            const isTargeted = Boolean(targetCandidateId && dest.id === targetCandidateId);
 
             return (
               <div
                 key={dest.id}
+                id={`candidate-${dest.id}`}
                 className={`rounded border p-3 transition-colors ${
-                  plan.isStale
-                    ? 'border-yellow-600/40 bg-yellow-500/5'
-                    : 'bg-card'
+                  isTargeted
+                    ? 'border-primary ring-1 ring-primary bg-card'
+                    : isQualified
+                      ? 'border-blue-500/40 bg-blue-500/5'
+                      : plan.isStale
+                        ? 'border-yellow-600/40 bg-yellow-500/5'
+                        : 'bg-card'
                 }`}
               >
                 {/* Header with Title and Classification Badges */}
@@ -276,6 +300,11 @@ export default function RefinancePanel({
                     </div>
                     {/* Factual Badges (Section 12, 15) */}
                     <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      {isQualified && (
+                        <span className="rounded bg-blue-500/20 px-1.5 py-0.5 text-[10px] font-bold text-blue-700 dark:text-blue-300">
+                          QUALIFIED FOR REVIEW
+                        </span>
+                      )}
                       {plan.factualLabels.map((label) => {
                         const isAlert = label === 'INSUFFICIENT LIQUIDITY' || label === 'LESS LIQUIDATION MARGIN' || label === 'CROSS-CHAIN' || label === 'COLLATERAL WRAPPER CHANGE';
                         const isGood = label === 'LOWER CURRENT RATE' || label === 'MORE LIQUIDATION MARGIN' || label === 'SHORTER BREAK-EVEN' || label === 'DEEPEST LIQUIDITY';

@@ -15,7 +15,7 @@ export const ALERT_SUBJECTS: Record<AlertKind, string> = {
   health: 'Warning: loan health factor dropped',
   liquidation: 'Warning: BTC is near your liquidation price',
   apr: 'Borrow APR spike on your loan',
-  refinance: 'Cheaper pool available for your loan',
+  refinance: 'Refinance opportunity ready to review',
   threshold: 'Accrued interest reached your threshold',
   weekly: 'Weekly loan interest digest',
   monthly: 'Monthly loan statement',

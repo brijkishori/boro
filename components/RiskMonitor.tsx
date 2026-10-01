@@ -225,6 +225,8 @@ export default function RiskMonitor({
   referenceBtcUsd = null,
   wrapperBtcUsd = null,
   venues,
+  initialTab,
+  candidateId,
 }: {
   headline?: {
     healthFactor: number | null;
@@ -239,6 +241,8 @@ export default function RiskMonitor({
   referenceBtcUsd?: number | null;
   wrapperBtcUsd?: number | null;
   venues?: Venue[];
+  initialTab?: string | null;
+  candidateId?: string | null;
 }) {
   const { address } = useAccount();
   const ratesHook = useRates();
@@ -297,6 +301,11 @@ export default function RiskMonitor({
     blockNumber: bigint;
   } | null>(null);
   const router = useRouter();
+  useEffect(() => {
+    if (initialTab && ['safety', 'rates', 'readiness', 'planner', 'emergency', 'whatif', 'refinance', 'market'].includes(initialTab)) {
+      setTab(initialTab as any);
+    }
+  }, [initialTab]);
   const stressTabSet = useRef(false);
   const [plannerNotice, setPlannerNotice] = useState('');
   const trendId = `${(address ?? 'signed-out').toLowerCase()}:${venue.chainId}:${venue.id}`;
@@ -910,6 +919,7 @@ export default function RiskMonitor({
               gasPriceWei={gas.feePerGas}
               ethPriceUsd={ethPriceUsd}
               sourceFreshness={report.domains.position === 'fresh' && report.domains.oracle === 'fresh' ? 'fresh' : 'stale'}
+              targetCandidateId={candidateId}
             />
           </section>
       </div>

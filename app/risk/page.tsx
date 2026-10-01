@@ -10,6 +10,8 @@ import { chainLabel, protocolLabel } from '@/lib/protocol';
 function RiskPageInner() {
   const params = useSearchParams();
   const market = params.get('market');
+  const tab = params.get('tab');
+  const candidate = params.get('candidate');
   const book = useLoanBook();
   const selected = book.views.find((view) => view.id === market) ?? book.views[0] ?? null;
   const position = selected ? book.active.find((item) => item.venue.id === selected.id) : undefined;
@@ -45,6 +47,8 @@ function RiskPageInner() {
           referenceBtcUsd={book.payload?.referenceBtcUsd}
           wrapperBtcUsd={book.payload?.wrapperBtcUsd}
           venues={book.venues}
+          initialTab={tab}
+          candidateId={candidate}
         />
       )}
     </div>

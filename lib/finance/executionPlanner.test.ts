@@ -169,7 +169,7 @@ describe('Emergency Execution Planner Foundation', () => {
   });
 
   it('H. wrong chain blocks execution', () => {
-    const remedyMath = repayToTargetHF({ ...baseInput, debt: baseInput.totalDebt, targetHf: 2.5, actionable: true });
+    const remedyMath = repayToTargetHF({ collateralAmount: baseInput.collateralAmount, debt: baseInput.totalDebt, oraclePrice: baseInput.oraclePrice, liquidationThreshold: baseInput.liquidationThreshold, targetHf: 2.5, actionable: true });
     const remedy: ProposedRemedy = {
       type: 'REPAY',
       targetHF: 2.5,
@@ -187,7 +187,7 @@ describe('Emergency Execution Planner Foundation', () => {
   });
 
   it('I. allowance already sufficient removes approval step', () => {
-    const remedyMath = repayToTargetHF({ ...baseInput, debt: baseInput.totalDebt, targetHf: 2.5, actionable: true });
+    const remedyMath = repayToTargetHF({ collateralAmount: baseInput.collateralAmount, debt: baseInput.totalDebt, oraclePrice: baseInput.oraclePrice, liquidationThreshold: baseInput.liquidationThreshold, targetHf: 2.5, actionable: true });
     const remedy: ProposedRemedy = {
       type: 'REPAY',
       targetHF: 2.5,
@@ -205,7 +205,7 @@ describe('Emergency Execution Planner Foundation', () => {
   });
 
   it('J. unknown allowance returns estimated confirmation range', () => {
-    const remedyMath = repayToTargetHF({ ...baseInput, debt: baseInput.totalDebt, targetHf: 2.5, actionable: true });
+    const remedyMath = repayToTargetHF({ collateralAmount: baseInput.collateralAmount, debt: baseInput.totalDebt, oraclePrice: baseInput.oraclePrice, liquidationThreshold: baseInput.liquidationThreshold, targetHf: 2.5, actionable: true });
     const remedy: ProposedRemedy = {
       type: 'REPAY',
       targetHF: 2.5,
@@ -222,7 +222,7 @@ describe('Emergency Execution Planner Foundation', () => {
   });
 
   it('K. unknown gas cost remains null/unknown', () => {
-    const remedyMath = repayToTargetHF({ ...baseInput, debt: baseInput.totalDebt, targetHf: 2.5, actionable: true });
+    const remedyMath = repayToTargetHF({ collateralAmount: baseInput.collateralAmount, debt: baseInput.totalDebt, oraclePrice: baseInput.oraclePrice, liquidationThreshold: baseInput.liquidationThreshold, targetHf: 2.5, actionable: true });
     const remedy: ProposedRemedy = {
       type: 'REPAY',
       targetHF: 2.5,

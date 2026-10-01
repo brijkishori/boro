@@ -5,6 +5,16 @@ import { alertToken, appUrl, unsubscribeUrl } from '@/lib/alerts';
 import { formatApr, formatToken, formatUsd, formatUsdExact } from '@/lib/amount';
 import { formatHealthFactor, formatLtv, formatPercent } from '@/lib/finance/format';
 import { digestLines, liveLikeOpenLoan, summarizeEpisodePeriod, type DigestPosition } from '@/lib/finance/periodInterest';
+import {
+  buildRefinanceDeepLink,
+  qualifyRefinancePlan,
+  type RefinanceQualification,
+} from '@/lib/finance/refinanceAlertQualification';
+import {
+  buildMigrationPlan,
+  type RefinanceCandidate,
+  type RefinanceMarketBaseline,
+} from '@/lib/finance/refinance';
 import { projectedInterest } from '@/lib/opportunities';
 import { chainLabel, protocolLabel, type Venue } from '@/lib/protocol';
 
@@ -136,11 +146,229 @@ export function aprAlert(address: string, facts: LoanFacts) {
   ], positionLines(facts));
 }
 
-export function refinanceAlert(address: string, facts: LoanFacts, hint: { toProtocol: string; toChain: string; toApr: string; yearly: string; monthly: string }) {
+function formatTimeAgo(timestamp: number, now = Date.now()): string {
+  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
+  if (seconds < 10) return 'just now';
+  if (seconds < 60) return `${seconds} seconds ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes === 1) return '1 minute ago';
+  if (minutes < 60) return `${minutes} minutes ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours === 1 ? '1 hour ago' : `${hours} hours ago`;
+}
+
+function wrapRefinanceEmailHtml(input: {
+  sourceProtocol: string;
+  sourceChain: string;
+  sourceAsset: string;
+  debtAsset: string;
+  currentApr: string;
+  destProtocol: string;
+  destChain: string;
+  destAsset: string;
+  destDebtAsset: string;
+  candidateApr: string;
+  aprImprovementBps: number;
+  monthlySavings: string;
+  annualSavings: string;
+  migrationCost: string;
+  breakEven: string;
+  sourceHf: string;
+  projectedHf: string;
+  sourceLiqBtc: string;
+  projectedLiqBtc: string;
+  lessMarginNotice?: string;
+  timeAgo: string;
+  deepLink: string;
+  loansUrl: string;
+  unsubUrl: string;
+}) {
+  return `<div style="font-family:Arial,sans-serif;font-size:15px;color:#111;max-width:600px">
+  <p style="margin:0 0 16px;font-size:16px;font-weight:700;color:#111;letter-spacing:-0.01em">REFINANCE OPPORTUNITY READY TO REVIEW</p>
+
+  <div style="margin:0 0 14px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px">
+    <p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase">Current</p>
+    <p style="margin:0;font-weight:600">${escapeHtml(input.sourceProtocol)} · ${escapeHtml(input.sourceChain)}</p>
+    <p style="margin:2px 0 0;font-size:13px;color:#475569">${escapeHtml(input.sourceAsset)} / ${escapeHtml(input.debtAsset)}</p>
+    <p style="margin:4px 0 0;font-size:14px;font-weight:600;color:#0f172a">APR ${escapeHtml(input.currentApr)}</p>
+  </div>
+
+  <div style="margin:0 0 14px;padding:12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px">
+    <p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#166534;text-transform:uppercase">Candidate</p>
+    <p style="margin:0;font-weight:600">${escapeHtml(input.destProtocol)} · ${escapeHtml(input.destChain)}</p>
+    <p style="margin:2px 0 0;font-size:13px;color:#15803d">${escapeHtml(input.destAsset)} / ${escapeHtml(input.destDebtAsset)}</p>
+    <p style="margin:4px 0 0;font-size:14px;font-weight:600;color:#166534">APR ${escapeHtml(input.candidateApr)}</p>
+  </div>
+
+  <div style="margin:0 0 14px">
+    <p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase">Difference</p>
+    <p style="margin:0;font-size:15px;font-weight:700;color:#16a34a">&darr; ${input.aprImprovementBps} bps</p>
+  </div>
+
+  <div style="margin:0 0 14px">
+    <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase">Estimated economics</p>
+    <ul style="margin:0;padding-left:1.2rem;line-height:1.6">
+      <li>~${escapeHtml(input.monthlySavings)}/mo lower borrowing cost</li>
+      <li>~${escapeHtml(input.annualSavings)}/yr</li>
+      <li>Migration cost: ${escapeHtml(input.migrationCost)}</li>
+      <li>Estimated break-even: ${escapeHtml(input.breakEven)}</li>
+    </ul>
+  </div>
+
+  <div style="margin:0 0 14px">
+    <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase">Execution fit</p>
+    <ul style="margin:0;padding-left:1.2rem;line-height:1.6">
+      <li>Same chain / same wrapper</li>
+      <li>Liquidity: sufficient</li>
+    </ul>
+  </div>
+
+  <div style="margin:0 0 14px">
+    <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#64748b;text-transform:uppercase">Safety</p>
+    <ul style="margin:0;padding-left:1.2rem;line-height:1.6">
+      <li>Current HF: ${escapeHtml(input.sourceHf)}</li>
+      <li>Projected HF: ${escapeHtml(input.projectedHf)}</li>
+      <li>Current liquidation BTC: ${escapeHtml(input.sourceLiqBtc)}</li>
+      <li>Projected liquidation BTC: ${escapeHtml(input.projectedLiqBtc)}</li>
+      ${input.lessMarginNotice ? `<li style="color:#d97706;font-weight:500">${escapeHtml(input.lessMarginNotice)}</li>` : ''}
+    </ul>
+  </div>
+
+  <div style="margin:0 0 18px">
+    <p style="margin:0;font-size:12px;color:#64748b">Data verified: ${escapeHtml(input.timeAgo)}</p>
+  </div>
+
+  <div style="margin:18px 0">
+    <a href="${escapeHtml(input.deepLink)}" style="display:inline-block;padding:10px 18px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:600;font-size:14px">
+      Review refinance
+    </a>
+  </div>
+
+  <p style="margin:20px 0 0;font-size:13px;color:#64748b;line-height:1.5">
+    <a href="${escapeHtml(input.loansUrl)}" style="color:#2563eb;text-decoration:underline">Open Loans</a>
+    &nbsp;·&nbsp;
+    <a href="${escapeHtml(input.unsubUrl)}" style="color:#2563eb;text-decoration:underline">Unsubscribe</a>
+  </p>
+</div>`;
+}
+
+export function refinanceAlert(
+  address: string,
+  qualificationOrFacts: RefinanceQualification | LoanFacts,
+  optionsOrHint?:
+    | { deepLinkUrl?: string; now?: number }
+    | { toProtocol: string; toChain: string; toApr: string; yearly: string; monthly: string },
+): AlertCopy {
+  if ('snapshot' in qualificationOrFacts && 'plan' in qualificationOrFacts) {
+    const qualification = qualificationOrFacts as RefinanceQualification;
+    const options = optionsOrHint as { deepLinkUrl?: string; now?: number } | undefined;
+    const snapshot = qualification.snapshot;
+    const plan = qualification.plan;
+    const now = options?.now ?? Date.now();
+
+    const sourceProtocol = protocolLabel(plan.sourceMarket.protocol);
+    const sourceChain = chainLabel(plan.sourceMarket.chainId);
+    const destProtocol = protocolLabel(plan.destinationMarket.protocol);
+    const destChain = chainLabel(plan.destinationMarket.chainId);
+
+    const monthlySavings = Math.round(snapshot.estimatedMonthlyDifference);
+    const subject = monthlySavings > 0
+      ? `Refinance opportunity ready to review — ~$${monthlySavings}/mo lower borrowing cost`
+      : 'Refinance opportunity ready to review';
+
+    const deepLink = options?.deepLinkUrl ?? buildRefinanceDeepLink(plan.sourceMarket.id, plan.destinationMarket.id);
+    const breakEvenDisplay = snapshot.breakEvenDays !== null
+      ? (snapshot.breakEvenDays < 1 ? '<1 day' : `~${Math.round(snapshot.breakEvenDays)} days`)
+      : 'Unavailable';
+    const timeAgoDisplay = formatTimeAgo(snapshot.timestamp, now);
+    const lessMarginNotice = snapshot.safetyComparison.hasLessMargin
+      ? `Destination has less liquidation margin (${snapshot.safetyComparison.marginCopy})`
+      : '';
+
+    const textLines = [
+      'REFINANCE OPPORTUNITY READY TO REVIEW',
+      '',
+      'Current:',
+      `${sourceProtocol} · ${sourceChain}`,
+      `${plan.sourceMarket.collateralAsset} / ${plan.sourceMarket.debtAsset}`,
+      `APR ${formatApr(snapshot.currentApr)}`,
+      '',
+      'Candidate:',
+      `${destProtocol} · ${destChain}`,
+      `${plan.destinationMarket.collateral} / ${plan.destinationMarket.debtAsset}`,
+      `APR ${formatApr(snapshot.candidateApr)}`,
+      '',
+      'Difference:',
+      `↓ ${snapshot.aprImprovementBps} bps`,
+      '',
+      'Estimated economics:',
+      `~$${snapshot.estimatedMonthlyDifference.toFixed(2)}/mo lower borrowing cost`,
+      `~$${snapshot.estimatedAnnualDifference.toFixed(2)}/yr`,
+      `Migration cost: ${snapshot.migrationCostUsd !== null ? formatUsdExact(snapshot.migrationCostUsd) : 'Unknown'}`,
+      `Estimated break-even: ${breakEvenDisplay}`,
+      '',
+      'Execution fit:',
+      'Same chain / same wrapper',
+      'Liquidity: sufficient',
+      '',
+      'Safety:',
+      `Current HF: ${snapshot.safetyComparison.sourceHealthFactor !== null ? formatHealthFactor(snapshot.safetyComparison.sourceHealthFactor) : '—'}`,
+      `Projected HF: ${snapshot.safetyComparison.projectedHealthFactor !== null ? formatHealthFactor(snapshot.safetyComparison.projectedHealthFactor) : '—'}`,
+      `Current liquidation BTC: ${snapshot.safetyComparison.sourceLiquidationBtc ? formatUsd(snapshot.safetyComparison.sourceLiquidationBtc) : '—'}`,
+      `Projected liquidation BTC: ${snapshot.safetyComparison.projectedLiquidationBtc ? formatUsd(snapshot.safetyComparison.projectedLiquidationBtc) : '—'}`,
+      ...(lessMarginNotice ? [lessMarginNotice] : []),
+      '',
+      'Data verified:',
+      timeAgoDisplay,
+      '',
+      `Review refinance: ${deepLink}`,
+      '',
+      `Open Loans: ${appUrl()}/loans`,
+      `Unsubscribe: ${unsubscribeUrl(address)}`,
+    ];
+
+    const html = wrapRefinanceEmailHtml({
+      sourceProtocol,
+      sourceChain,
+      sourceAsset: plan.sourceMarket.collateralAsset,
+      debtAsset: plan.sourceMarket.debtAsset,
+      currentApr: formatApr(snapshot.currentApr),
+      destProtocol,
+      destChain,
+      destAsset: plan.destinationMarket.collateral,
+      destDebtAsset: plan.destinationMarket.debtAsset,
+      candidateApr: formatApr(snapshot.candidateApr),
+      aprImprovementBps: snapshot.aprImprovementBps,
+      monthlySavings: formatUsdExact(snapshot.estimatedMonthlyDifference),
+      annualSavings: formatUsdExact(snapshot.estimatedAnnualDifference),
+      migrationCost: snapshot.migrationCostUsd !== null ? formatUsdExact(snapshot.migrationCostUsd) : 'Unknown',
+      breakEven: breakEvenDisplay,
+      sourceHf: snapshot.safetyComparison.sourceHealthFactor !== null ? formatHealthFactor(snapshot.safetyComparison.sourceHealthFactor) : '—',
+      projectedHf: snapshot.safetyComparison.projectedHealthFactor !== null ? formatHealthFactor(snapshot.safetyComparison.projectedHealthFactor) : '—',
+      sourceLiqBtc: snapshot.safetyComparison.sourceLiquidationBtc ? formatUsd(snapshot.safetyComparison.sourceLiquidationBtc) : '—',
+      projectedLiqBtc: snapshot.safetyComparison.projectedLiquidationBtc ? formatUsd(snapshot.safetyComparison.projectedLiquidationBtc) : '—',
+      lessMarginNotice,
+      timeAgo: timeAgoDisplay,
+      deepLink,
+      loansUrl: `${appUrl()}/loans`,
+      unsubUrl: unsubscribeUrl(address),
+    });
+
+    return {
+      kind: 'refinance',
+      subject,
+      text: textLines.join('\n'),
+      html,
+    };
+  }
+
+  // Fallback for legacy / test facts call
+  const facts = qualificationOrFacts as LoanFacts;
+  const hint = (optionsOrHint ?? {}) as { toProtocol: string; toChain: string; toApr: string; yearly: string; monthly: string };
   return renderAlertEmail('refinance', address, [
     `You can lower the rate on ${facts.debtUsd} of ${facts.asset} debt.`,
-    `Move from ${facts.protocol} ${facts.borrowApr} on ${facts.chain} to ${hint.toProtocol} ${hint.toApr} on ${hint.toChain}.`,
-    `Estimated savings: ${hint.monthly}/month, ${hint.yearly}/year. Four wallet confirmations: repay, withdraw, supply, borrow. Nothing is sent automatically.`,
+    `Refinance opportunity ready to review: from ${facts.protocol} ${facts.borrowApr} on ${facts.chain} to ${hint.toProtocol} ${hint.toApr} on ${hint.toChain}.`,
+    `Estimated savings: ${hint.monthly}/month, ${hint.yearly}/year.`,
   ], positionLines(facts));
 }
 
@@ -225,6 +453,87 @@ function accountingDigest(period: 'week' | 'month') {
   return digestLines(period, [row], []);
 }
 
+export function sampleRefinanceQualification(): RefinanceQualification {
+  const currentApr = 0.0483; // 4.83%
+  const candidateApr = 0.0398; // 3.98%
+  const debt = 20_934.12;
+  const now = Date.now();
+
+  const sourceMarket: RefinanceMarketBaseline = {
+    id: 'morpho-8453-cbBTC-USDC-0x9103',
+    protocol: 'morpho',
+    chainId: 8453,
+    marketId: 'morpho-8453-cbBTC-USDC-0x9103',
+    collateralAsset: 'cbBTC',
+    debtAsset: 'USDC',
+    collateralAmount: 1.0,
+    collateralValueUsd: 84_000,
+    debt,
+    currentApr,
+    openingApr: 0.0483,
+    safety: {
+      ltv: 0.249,
+      healthFactor: 3.45,
+      liquidationThreshold: 0.86,
+      liquidationBtc: 24_340,
+      liquidationCushion: 0.71,
+    },
+    availableLiquidity: 10_000_000,
+    utilization: 0.65,
+    freshness: 'fresh',
+    oraclePrice: 84_000,
+    stability: { currentApr, avg7d: 0.0485, avg30d: 0.049, min7d: 0.047, max7d: 0.05, hasHistory: true },
+  };
+
+  const destinationMarket: RefinanceCandidate = {
+    id: 'compound-8453-cbBTC-USDC-0x1234',
+    protocol: 'compound',
+    chainId: 8453,
+    marketId: 'compound-8453-cbBTC-USDC-0x1234',
+    collateral: 'cbBTC',
+    debtAsset: 'USDC',
+    currentApr: candidateApr,
+    stability: { currentApr: candidateApr, avg7d: 0.04, avg30d: 0.041, min7d: 0.039, max7d: 0.042, hasHistory: true },
+    liquidationThreshold: 0.86,
+    availableLiquidity: 5_000_000,
+    utilization: 0.60,
+    freshness: 'fresh',
+    wrapper: 'cbBTC',
+    classification: 'SAME_CHAIN_SAME_WRAPPER',
+    classificationLabel: 'Same chain · Same wrapper',
+    isStale: false,
+    venue: {
+      id: 'compound-8453-cbBTC-USDC-0x1234',
+      protocol: 'compound',
+      action: 'borrow',
+      chainId: 8453,
+      assetSymbol: 'cbBTC',
+      assetKind: 'custodial',
+      assetAddress: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf',
+      assetDecimals: 8,
+      loanSymbol: 'USDC',
+      loanAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      loanDecimals: 6,
+      borrowApr: candidateApr,
+      supplyApr: 0.03,
+      maxLtv: 0.86,
+      liquidityUsd: 5_000_000,
+      priceUsd: 84_000,
+      freshness: { source: 'rpc', fetchedAt: now - 30_000 },
+    },
+  };
+
+  const plan = buildMigrationPlan({
+    sourceMarket,
+    destinationMarket,
+    gasPriceWei: 1_000_000_000n,
+    ethPriceUsd: 2500,
+    now,
+  });
+
+  return qualifyRefinancePlan(plan, undefined, now);
+}
+
 export function sampleAlertByKind(address: string, kind: AlertKind) {
   return sampleAlertEmails(address).find((sample) => sample.kind === kind) ?? null;
 }
@@ -237,13 +546,7 @@ export function sampleAlertEmails(address: string): AlertCopy[] {
     healthAlert('health', address, { ...facts, healthFactor: '1.41', ltv: '51.8%', liquidationPrice: '$72,180', dropPct: '14.4%' }),
     liquidationAlert(address, { ...facts, healthFactor: '1.18', ltv: '62.0%', liquidationPrice: '$76,900', dropPct: '8.8%' }),
     aprAlert(address, { ...facts, borrowApr: '12.40%', interestMonth: '$1.03', interestYear: '$12.40' }),
-    refinanceAlert(address, facts, {
-      toProtocol: 'Spark',
-      toChain: 'Ethereum',
-      toApr: '4.18%',
-      yearly: formatUsdExact(0.93),
-      monthly: formatUsdExact(0.08),
-    }),
+    refinanceAlert(address, sampleRefinanceQualification()),
     thresholdAlert(address, facts, '$5.10', '$94.90'),
     weeklyAlert(address, accountingDigest('week')),
     monthlyAlert(address, accountingDigest('month')),
