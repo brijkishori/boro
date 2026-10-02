@@ -182,8 +182,10 @@ function wrapRefinanceEmailHtml(input: {
   deepLink: string;
   loansUrl: string;
   unsubUrl: string;
+  isSimulated?: boolean;
 }) {
   return `<div style="font-family:Arial,sans-serif;font-size:15px;color:#111;max-width:600px">
+  ${input.isSimulated ? `<div style="margin:0 0 16px;padding:10px 14px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;color:#92400e;font-weight:700;font-size:13px;text-align:center">SIMULATED DATA — NOT LIVE MARKET DATA</div>` : ''}
   <p style="margin:0 0 16px;font-size:16px;font-weight:700;color:#111;letter-spacing:-0.01em">REFINANCE OPPORTUNITY READY TO REVIEW</p>
 
   <div style="margin:0 0 14px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px">
@@ -235,7 +237,9 @@ function wrapRefinanceEmailHtml(input: {
   </div>
 
   <div style="margin:0 0 18px">
-    <p style="margin:0;font-size:12px;color:#64748b">Data verified: ${escapeHtml(input.timeAgo)}</p>
+    ${input.isSimulated
+      ? `<p style="margin:0;font-size:12px;color:#d97706;font-weight:600">SIMULATED DATA — NOT LIVE MARKET DATA</p>`
+      : `<p style="margin:0;font-size:12px;color:#64748b">Data verified: ${escapeHtml(input.timeAgo)}</p>`}
   </div>
 
   <div style="margin:18px 0">
@@ -256,15 +260,16 @@ export function refinanceAlert(
   address: string,
   qualificationOrFacts: RefinanceQualification | LoanFacts,
   optionsOrHint?:
-    | { deepLinkUrl?: string; now?: number }
+    | { deepLinkUrl?: string; now?: number; isSimulated?: boolean }
     | { toProtocol: string; toChain: string; toApr: string; yearly: string; monthly: string },
 ): AlertCopy {
   if ('snapshot' in qualificationOrFacts && 'plan' in qualificationOrFacts) {
     const qualification = qualificationOrFacts as RefinanceQualification;
-    const options = optionsOrHint as { deepLinkUrl?: string; now?: number } | undefined;
+    const options = optionsOrHint as { deepLinkUrl?: string; now?: number; isSimulated?: boolean } | undefined;
     const snapshot = qualification.snapshot;
     const plan = qualification.plan;
     const now = options?.now ?? Date.now();
+    const isSimulated = Boolean(options?.isSimulated || qualification.isSimulated || snapshot?.isSimulated);
 
     const sourceProtocol = protocolLabel(plan.sourceMarket.protocol);
     const sourceChain = chainLabel(plan.sourceMarket.chainId);
@@ -286,6 +291,7 @@ export function refinanceAlert(
       : '';
 
     const textLines = [
+      ...(isSimulated ? ['SIMULATED DATA — NOT LIVE MARKET DATA', ''] : []),
       'REFINANCE OPPORTUNITY READY TO REVIEW',
       '',
       'Current:',
@@ -318,8 +324,9 @@ export function refinanceAlert(
       `Projected liquidation BTC: ${snapshot.safetyComparison.projectedLiquidationBtc ? formatUsd(snapshot.safetyComparison.projectedLiquidationBtc) : '—'}`,
       ...(lessMarginNotice ? [lessMarginNotice] : []),
       '',
-      'Data verified:',
-      timeAgoDisplay,
+      ...(isSimulated
+        ? ['Data status: SIMULATED DATA — NOT LIVE MARKET DATA']
+        : ['Data verified:', timeAgoDisplay]),
       '',
       `Review refinance: ${deepLink}`,
       '',
@@ -352,6 +359,7 @@ export function refinanceAlert(
       deepLink,
       loansUrl: `${appUrl()}/loans`,
       unsubUrl: unsubscribeUrl(address),
+      isSimulated,
     });
 
     return {
@@ -531,24 +539,46 @@ export function sampleRefinanceQualification(): RefinanceQualification {
     now,
   });
 
-  return qualifyRefinancePlan(plan, undefined, now);
+  console.log(
+    `[ALERT TEST] mode=SIMULATED_FIXTURE env=${process.env.NODE_ENV ?? 'development'} ` +
+    `sourceMarket=${sourceMarket.id} candidateMarket=${destinationMarket.id} ` +
+    `sourceApr=${currentApr} candidateApr=${candidateApr} fetchedAt=${now}`,
+  );
+
+  const qualification = qualifyRefinancePlan(plan, undefined, now);
+  return {
+    ...qualification,
+    isSimulated: true,
+    snapshot: {
+      ...qualification.snapshot,
+      isSimulated: true,
+    },
+  };
+}
+
+export function sampleSimulatedRefinanceAlert(address: string): AlertCopy {
+  return refinanceAlert(address, sampleRefinanceQualification(), { isSimulated: true });
 }
 
 export function sampleAlertByKind(address: string, kind: AlertKind) {
+  if (kind === 'refinance') return null;
   return sampleAlertEmails(address).find((sample) => sample.kind === kind) ?? null;
 }
 
-export function sampleAlertEmails(address: string): AlertCopy[] {
+export function sampleAlertEmails(address: string, options?: { includeSimulatedRefinance?: boolean }): AlertCopy[] {
   const facts = sampleFacts();
-  return [
+  const alerts: AlertCopy[] = [
     confirmAlertEmail(address, 'sample@example.com'),
     healthAlert('urgent', address, { ...facts, healthFactor: '1.12', ltv: '65.2%', liquidationPrice: '$79,410', dropPct: '5.8%' }),
     healthAlert('health', address, { ...facts, healthFactor: '1.41', ltv: '51.8%', liquidationPrice: '$72,180', dropPct: '14.4%' }),
     liquidationAlert(address, { ...facts, healthFactor: '1.18', ltv: '62.0%', liquidationPrice: '$76,900', dropPct: '8.8%' }),
     aprAlert(address, { ...facts, borrowApr: '12.40%', interestMonth: '$1.03', interestYear: '$12.40' }),
-    refinanceAlert(address, sampleRefinanceQualification()),
     thresholdAlert(address, facts, '$5.10', '$94.90'),
     weeklyAlert(address, accountingDigest('week')),
     monthlyAlert(address, accountingDigest('month')),
   ];
+  if (options?.includeSimulatedRefinance) {
+    alerts.push(sampleSimulatedRefinanceAlert(address));
+  }
+  return alerts;
 }

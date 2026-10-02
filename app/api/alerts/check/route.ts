@@ -10,7 +10,7 @@ import { appendTrendSample, buildEarlyWarning, earlyWarningEmailLines, type Tren
 import { resolveRiskThresholds } from '@/lib/finance/riskMonitor';
 import { serverTrendKey } from '@/lib/finance/trendStore';
 import { storeJson, storeSetJson } from '@/lib/store';
-import { adapterFor } from '@/lib/adapters';
+import { adapterFor, readPosition } from '@/lib/adapters';
 import { aprAlert, healthAlert, liquidationAlert, loanFacts, monthlyAlert, refinanceAlert, renderAlertEmail, thresholdAlert, weeklyAlert, type AlertCopy } from '@/lib/alertEmail';
 import { allSubscribers, saveSubscriber, shouldSend, type AlertSubscriber } from '@/lib/alerts';
 import { sendMail } from '@/lib/mail';
@@ -34,20 +34,6 @@ function authorized(request: Request) {
   const secret = process.env.CRON_SECRET?.trim();
   if (!secret) return process.env.NODE_ENV !== 'production';
   return request.headers.get('authorization') === `Bearer ${secret}`;
-}
-
-async function readPosition(venue: Venue, user: Address) {
-  const adapter = adapterFor(venue);
-  const reads = adapter.positionReads(venue, user);
-  if (reads.length === 0) return null;
-  const client = publicClient(venue.chainId);
-  const results = await Promise.all(reads.map((call) => client.readContract({
-    address: call.address,
-    abi: call.abi,
-    functionName: call.functionName,
-    args: call.args,
-  })));
-  return adapter.parsePosition(venue, results);
 }
 
 function localParts(timeZone: string) {

@@ -45,13 +45,14 @@ export async function fetchCompoundVenues(btcPriceUsd: number): Promise<Venue[]>
     if (!comet) continue;
     const client = publicClient(chainId);
     try {
-      const [baseToken, utilization, totalSupply, totalBorrow, minBorrow, numAssets] = await Promise.all([
+      const [baseToken, utilization, totalSupply, totalBorrow, minBorrow, numAssets, blockNumber] = await Promise.all([
         client.readContract({ address: comet, abi: cometAbi, functionName: 'baseToken' }),
         client.readContract({ address: comet, abi: cometAbi, functionName: 'getUtilization' }),
         client.readContract({ address: comet, abi: cometAbi, functionName: 'totalSupply' }),
         client.readContract({ address: comet, abi: cometAbi, functionName: 'totalBorrow' }),
         client.readContract({ address: comet, abi: cometAbi, functionName: 'baseBorrowMin' }),
         client.readContract({ address: comet, abi: cometAbi, functionName: 'numAssets' }),
+        client.getBlockNumber().catch(() => undefined),
       ]);
       if (getAddress(baseToken) !== CHAINS[chainId].usdc.address) continue;
       const [borrowRate, supplyRate] = await Promise.all([
@@ -95,7 +96,11 @@ export async function fetchCompoundVenues(btcPriceUsd: number): Promise<Venue[]>
             utilization: utilizationRatio,
           },
           collateralRisk: { maxLtv, liquidationThreshold, parameterSource: 'live' },
-          freshness: { source: `Compound V3 ${chainId === 1 ? 'Ethereum' : 'Base'}`, fetchedAt: Date.now() },
+          freshness: {
+            source: `Compound V3 ${chainId === 1 ? 'Ethereum' : 'Base'}`,
+            fetchedAt: Date.now(),
+            blockNumber: blockNumber !== undefined ? Number(blockNumber) : undefined,
+          },
           priceUsd: btcPriceUsd,
           utilization: utilizationRatio,
           compound: { comet, minBorrow: minBorrow.toString() },
@@ -115,9 +120,12 @@ export async function fetchSparkVenues(btcPriceUsd: number): Promise<Venue[]> {
   const usdc = CHAINS[1].usdc.address;
   const venues: Venue[] = [];
   try {
-    const usdcConfig = await client.readContract({ address: SPARK_DATA_PROVIDER, abi: aaveDataProviderAbi, functionName: 'getReserveConfigurationData', args: [usdc] });
-    const usdcData = await client.readContract({ address: SPARK_DATA_PROVIDER, abi: aaveDataProviderAbi, functionName: 'getReserveData', args: [usdc] });
-    const usdcTokens = await client.readContract({ address: SPARK_DATA_PROVIDER, abi: aaveDataProviderAbi, functionName: 'getReserveTokensAddresses', args: [usdc] });
+    const [usdcConfig, usdcData, usdcTokens, blockNumber] = await Promise.all([
+      client.readContract({ address: SPARK_DATA_PROVIDER, abi: aaveDataProviderAbi, functionName: 'getReserveConfigurationData', args: [usdc] }),
+      client.readContract({ address: SPARK_DATA_PROVIDER, abi: aaveDataProviderAbi, functionName: 'getReserveData', args: [usdc] }),
+      client.readContract({ address: SPARK_DATA_PROVIDER, abi: aaveDataProviderAbi, functionName: 'getReserveTokensAddresses', args: [usdc] }),
+      client.getBlockNumber().catch(() => undefined),
+    ]);
     if (!usdcConfig[6] || usdcConfig[8] !== true || usdcConfig[9] === true) return [];
     const borrowApr = rayApr(usdcData[6]);
     const usdcSupplyApr = rayApr(usdcData[5]);
@@ -159,7 +167,11 @@ export async function fetchSparkVenues(btcPriceUsd: number): Promise<Venue[]> {
           parameterSource: 'live',
           eMode: { available: false },
         },
-        freshness: { source: 'Spark on-chain', fetchedAt: Date.now() },
+        freshness: {
+          source: 'Spark on-chain',
+          fetchedAt: Date.now(),
+          blockNumber: blockNumber !== undefined ? Number(blockNumber) : undefined,
+        },
         priceUsd: btcPriceUsd,
         aave,
       };
@@ -188,12 +200,13 @@ export async function fetchMoonwellVenues(btcPriceUsd: number): Promise<Venue[]>
   const client = publicClient(chainId);
   const venues: Venue[] = [];
   try {
-    const [mUsdcUnderlying, borrowRate, usdcSupplyRate, cash, totalBorrows] = await Promise.all([
+    const [mUsdcUnderlying, borrowRate, usdcSupplyRate, cash, totalBorrows, blockNumber] = await Promise.all([
       client.readContract({ address: MOONWELL.mUsdc, abi: moonwellTokenAbi, functionName: 'underlying' }),
       client.readContract({ address: MOONWELL.mUsdc, abi: moonwellTokenAbi, functionName: 'borrowRatePerTimestamp' }),
       client.readContract({ address: MOONWELL.mUsdc, abi: moonwellTokenAbi, functionName: 'supplyRatePerTimestamp' }),
       client.readContract({ address: MOONWELL.mUsdc, abi: moonwellTokenAbi, functionName: 'getCash' }),
       client.readContract({ address: MOONWELL.mUsdc, abi: moonwellTokenAbi, functionName: 'totalBorrows' }),
+      client.getBlockNumber().catch(() => undefined),
     ]);
     if (getAddress(mUsdcUnderlying) !== CHAINS[chainId].usdc.address) return [];
     const borrowApr = perTimestampApr(borrowRate);
@@ -236,7 +249,11 @@ export async function fetchMoonwellVenues(btcPriceUsd: number): Promise<Venue[]>
           utilization: cash + totalBorrows > 0n ? Number(totalBorrows) / Number(cash + totalBorrows) : 0,
         },
         collateralRisk: { maxLtv, parameterSource: 'live' },
-        freshness: { source: 'Moonwell on-chain', fetchedAt: Date.now() },
+        freshness: {
+          source: 'Moonwell on-chain',
+          fetchedAt: Date.now(),
+          blockNumber: blockNumber !== undefined ? Number(blockNumber) : undefined,
+        },
         priceUsd: btcPriceUsd,
         utilization: cash + totalBorrows > 0n ? Number(totalBorrows) / Number(cash + totalBorrows) : 0,
         moonwell,

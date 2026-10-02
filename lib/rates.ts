@@ -478,22 +478,23 @@ async function loadRates(): Promise<RatesPayload> {
   };
 }
 
-export function getRates(opts?: { bypassCache?: boolean }): Promise<RatesPayload> {
+export function getRates(opts?: { bypassCache?: boolean; strict?: boolean }): Promise<RatesPayload> {
   const bypass = Boolean(opts?.bypassCache);
-  if (!bypass && cache && Date.now() - cache.at < FRESH_MS) return Promise.resolve(cache.payload);
-  if (!bypass && inflight) return inflight;
+  const strict = Boolean(opts?.strict);
+  if (!bypass && !strict && cache && Date.now() - cache.at < FRESH_MS) return Promise.resolve(cache.payload);
+  if (!bypass && !strict && inflight) return inflight;
   const request = withTimeout(loadRates(), LOAD_MS, 'rates-timeout')
     .then((payload) => {
       cache = { at: Date.now(), payload };
       return payload;
     })
     .catch((error: unknown) => {
-      if (cache && Date.now() - cache.at < STALE_MS) return cache.payload;
+      if (!strict && !bypass && cache && Date.now() - cache.at < STALE_MS) return cache.payload;
       throw error;
     })
     .finally(() => {
       if (inflight === request) inflight = null;
     });
-  if (!bypass) inflight = request;
+  if (!bypass && !strict) inflight = request;
   return request;
 }

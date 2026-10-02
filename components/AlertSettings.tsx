@@ -104,9 +104,15 @@ export default function AlertSettings({ loans = [] }: { loans?: OpenPosition[] }
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address, kind: kind === 'all' ? undefined : kind }),
       });
-      const body = (await response.json().catch(() => ({}))) as { error?: string; sent?: number };
+      const body = (await response.json().catch(() => ({}))) as { error?: string; sent?: number | boolean; reason?: string };
       if (!response.ok) throw new Error(body.error ?? 'Could not send test email.');
-      toast.success(kind === 'all' ? `Sent ${body.sent ?? 9} test emails.` : 'Test email sent. Check the inbox.');
+      if (body.sent === false) {
+        toast.info(body.reason === 'NO_QUALIFIED_REFINANCE_OPPORTUNITY'
+          ? 'No qualified refinance opportunity found for your position at live rates.'
+          : `No test email sent: ${body.reason ?? 'not qualified'}`);
+      } else {
+        toast.success(kind === 'all' ? `Sent ${body.sent ?? 8} test emails.` : 'Test email sent. Check the inbox.');
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not send test email.');
     } finally {

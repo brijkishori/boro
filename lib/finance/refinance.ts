@@ -1,5 +1,5 @@
 import type { ChainId, ProtocolId, Venue } from '@/lib/protocol';
-import { availableToBorrowUsd, dedupeVenues } from '@/lib/protocol';
+import { availableToBorrowUsd, canonicalMarketKey, chainLabel, dedupeVenues, protocolMarketId } from '@/lib/protocol';
 
 export const REFINANCE_GAS_UNITS = {
   repay: 200_000n,
@@ -11,7 +11,8 @@ export const REFINANCE_GAS_UNITS = {
 } as const;
 
 export const STATIC_SCENARIO_PERIODS = [30, 90, 365] as const;
-export const STALE_THRESHOLD_MS = 5 * 60_000; // 5 minutes
+export const STALE_THRESHOLD_MS = 5 * 60_000; // 5 minutes (general UI)
+export const ACTIONABLE_FRESHNESS_MAX_AGE_MS = 30_000; // 30 seconds (strict actionable requirement)
 
 export type MigrationClassification =
   | 'SAME_CHAIN_SAME_WRAPPER'
@@ -106,6 +107,23 @@ export type RefinanceCandidate = {
   classificationLabel: string;
   isStale: boolean;
   venue: Venue;
+};
+
+export type ActionableMarketSnapshot = {
+  readonly canonicalMarketId: string;
+  readonly protocol: ProtocolId;
+  readonly chainId: ChainId;
+  readonly collateralAsset: string;
+  readonly debtAsset: string;
+  readonly currentApr: number;
+  readonly availableLiquidity: number;
+  readonly liquidationThreshold: number;
+  readonly oraclePrice: number;
+  readonly fetchedAt: number;
+  readonly blockNumber: number | null;
+  readonly sourceProvider: string;
+  readonly isStale: boolean;
+  readonly venue: Venue;
 };
 
 export type MigrationPlan = {
@@ -521,8 +539,12 @@ export function buildMigrationPlan(input: {
     calculateStaticScenario(debt, currentApr, candidateApr, days, estimatedCosts.estimatedCostUsd),
   );
 
-  const isStale = destinationMarket.isStale;
-  const freshness: FreshnessState = isStale ? 'stale' : destinationMarket.freshness;
+  const isStale = destinationMarket.isStale || destinationMarket.freshness === 'stale' || sourceMarket.freshness === 'stale';
+  const freshness: FreshnessState = isStale
+    ? 'stale'
+    : (destinationMarket.freshness === 'fresh' && sourceMarket.freshness === 'fresh')
+      ? 'fresh'
+      : 'unavailable';
 
   return {
     sourceMarket,
@@ -575,6 +597,7 @@ export function findRefinanceCandidates(
   sourceVenue: Venue,
   allVenues: Venue[],
   now = Date.now(),
+  maxAgeMs = STALE_THRESHOLD_MS,
 ): RefinanceCandidate[] {
   const borrowVenues = dedupeVenues(allVenues.filter(
     (v) => v.action === 'borrow' && v.id !== sourceVenue.id,
@@ -585,12 +608,12 @@ export function findRefinanceCandidates(
     const label = classificationLabel(classification);
     const availableLiquidity = availableToBorrowUsd(venue);
     const fetchedAt = venue.freshness?.fetchedAt ?? 0;
-    const isStale = fetchedAt > 0 && now - fetchedAt > STALE_THRESHOLD_MS;
-    const freshness: FreshnessState = isStale
-      ? 'stale'
-      : venue.freshness
-        ? 'fresh'
-        : 'unavailable';
+    const isStale = fetchedAt <= 0 || now - fetchedAt > (maxAgeMs === ACTIONABLE_FRESHNESS_MAX_AGE_MS ? maxAgeMs + 5_000 : maxAgeMs);
+    const freshness: FreshnessState = !venue.freshness || fetchedAt <= 0
+      ? 'unavailable'
+      : isStale
+        ? 'stale'
+        : 'fresh';
 
     const threshold =
       venue.collateralRisk?.liquidationLtv ??
@@ -632,4 +655,178 @@ export function findRefinanceCandidates(
   });
 
   return candidates;
+}
+
+export function toActionableMarketSnapshot(
+  venue: Venue,
+  now = Date.now(),
+  maxAgeMs = ACTIONABLE_FRESHNESS_MAX_AGE_MS,
+): ActionableMarketSnapshot {
+  const fetchedAt = venue.freshness?.fetchedAt ?? 0;
+  const isStale = fetchedAt <= 0 || (now - fetchedAt) > (maxAgeMs === ACTIONABLE_FRESHNESS_MAX_AGE_MS ? maxAgeMs + 5_000 : maxAgeMs);
+  const liquidationThreshold =
+    venue.collateralRisk?.liquidationLtv ??
+    venue.collateralRisk?.liquidationThreshold ??
+    venue.maxLtv;
+
+  return Object.freeze({
+    canonicalMarketId: canonicalMarketKey(venue),
+    protocol: venue.protocol,
+    chainId: venue.chainId,
+    collateralAsset: venue.assetSymbol,
+    debtAsset: venue.loanSymbol,
+    currentApr: venue.borrowApr,
+    availableLiquidity: venue.liquidityUsd ?? venue.liquidity?.availableToBorrow ?? 0,
+    liquidationThreshold,
+    oraclePrice: venue.priceUsd,
+    fetchedAt,
+    blockNumber: venue.freshness?.blockNumber ?? null,
+    sourceProvider: venue.freshness?.source ?? venue.protocol,
+    isStale,
+    venue,
+  });
+}
+
+export async function loadActionableMarketSnapshot(
+  marketId: string,
+  options?: {
+    fresh?: boolean;
+    maxAgeMs?: number;
+    venues?: Venue[];
+    now?: number;
+  },
+): Promise<ActionableMarketSnapshot> {
+  const now = options?.now ?? Date.now();
+  const maxAgeMs = options?.maxAgeMs ?? ACTIONABLE_FRESHNESS_MAX_AGE_MS;
+  const fresh = options?.fresh ?? true;
+
+  let pool: Venue[] = options?.venues ?? [];
+  if (fresh || pool.length === 0) {
+    const { getRates } = await import('@/lib/rates');
+    const ratesPayload = await getRates({ bypassCache: fresh, strict: true });
+    pool = ratesPayload.venues;
+  }
+
+  const match = pool.find((v) =>
+    v.id === marketId ||
+    canonicalMarketKey(v) === marketId ||
+    protocolMarketId(v) === marketId,
+  );
+
+  if (!match) {
+    throw new Error(`Authoritative market read unavailable: market ${marketId} not found.`);
+  }
+
+  const snapshot = toActionableMarketSnapshot(match, now, maxAgeMs);
+  if (snapshot.isStale) {
+    throw new Error(`Authoritative market data for ${marketId} is stale (fetched ${Math.round((now - snapshot.fetchedAt) / 1000)}s ago, exceeds ${maxAgeMs / 1000}s limit).`);
+  }
+  if (!Number.isFinite(snapshot.currentApr) || snapshot.currentApr < 0) {
+    throw new Error(`Authoritative borrow APR for ${marketId} is invalid.`);
+  }
+  if (!Number.isFinite(snapshot.availableLiquidity) || snapshot.availableLiquidity < 0) {
+    throw new Error(`Authoritative liquidity for ${marketId} is invalid.`);
+  }
+  if (snapshot.oraclePrice <= 0) {
+    throw new Error(`Authoritative oracle price for ${marketId} is missing or non-positive.`);
+  }
+
+  return snapshot;
+}
+
+export function actionableSnapshotToBaseline(
+  snapshot: ActionableMarketSnapshot,
+  position: {
+    debt: number;
+    collateralAmount: number;
+    openingApr?: number | null;
+    ltv?: number | null;
+    healthFactor?: number | null;
+    liquidationPrice?: number | null;
+    liquidationCushion?: number | null;
+  },
+  now = Date.now(),
+): RefinanceMarketBaseline {
+  const safety = calculateSafetyProjection(
+    position.debt,
+    position.collateralAmount,
+    snapshot.oraclePrice,
+    snapshot.liquidationThreshold,
+  );
+  const freshness: FreshnessState = snapshot.fetchedAt <= 0
+    ? 'unavailable'
+    : snapshot.isStale
+      ? 'stale'
+      : 'fresh';
+
+  return {
+    id: snapshot.venue.id,
+    protocol: snapshot.protocol,
+    chainId: snapshot.chainId,
+    marketId: snapshot.canonicalMarketId,
+    collateralAsset: snapshot.collateralAsset,
+    debtAsset: snapshot.debtAsset,
+    collateralAmount: position.collateralAmount,
+    collateralValueUsd: position.collateralAmount * snapshot.oraclePrice,
+    debt: position.debt,
+    currentApr: snapshot.currentApr,
+    openingApr: position.openingApr ?? null,
+    safety: {
+      ltv: position.ltv ?? safety.ltv,
+      healthFactor: position.healthFactor ?? safety.healthFactor,
+      liquidationThreshold: snapshot.liquidationThreshold,
+      liquidationBtc: position.liquidationPrice ?? safety.liquidationBtc,
+      liquidationCushion: position.liquidationCushion ?? safety.liquidationCushion,
+    },
+    availableLiquidity: snapshot.availableLiquidity,
+    utilization: snapshot.venue.utilization ?? null,
+    freshness,
+    oraclePrice: snapshot.oraclePrice,
+    stability: calculateRateStability(snapshot.currentApr, snapshot.venue.rateHistory),
+  };
+}
+
+export function actionableSnapshotToCandidate(
+  sourceSnapshot: ActionableMarketSnapshot,
+  destSnapshot: ActionableMarketSnapshot,
+  now = Date.now(),
+): RefinanceCandidate {
+  const isSameChain = sourceSnapshot.chainId === destSnapshot.chainId;
+  const isSameWrapper = sourceSnapshot.collateralAsset === destSnapshot.collateralAsset;
+  let classification: MigrationClassification = 'SAME_CHAIN_SAME_WRAPPER';
+  let classificationLabel = 'Same chain · Same wrapper';
+
+  if (!isSameChain) {
+    classification = 'CROSS_CHAIN';
+    classificationLabel = `Cross-chain (${chainLabel(destSnapshot.chainId)})`;
+  } else if (!isSameWrapper) {
+    classification = 'SAME_CHAIN_WRAPPER_CHANGE';
+    classificationLabel = `Wrapper change (${destSnapshot.collateralAsset})`;
+  }
+
+  const freshness: FreshnessState = destSnapshot.fetchedAt <= 0
+    ? 'unavailable'
+    : destSnapshot.isStale
+      ? 'stale'
+      : 'fresh';
+
+  return {
+    id: destSnapshot.venue.id,
+    protocol: destSnapshot.protocol,
+    chainId: destSnapshot.chainId,
+    marketId: destSnapshot.canonicalMarketId,
+    collateral: destSnapshot.collateralAsset,
+    debtAsset: destSnapshot.debtAsset,
+    currentApr: destSnapshot.currentApr,
+    stability: calculateRateStability(destSnapshot.currentApr, destSnapshot.venue.rateHistory),
+    liquidationThreshold: destSnapshot.liquidationThreshold,
+    availableLiquidity: destSnapshot.availableLiquidity,
+    utilization: destSnapshot.venue.utilization ?? null,
+    freshness,
+    wrapper: destSnapshot.collateralAsset,
+    classification,
+    classificationLabel,
+    isStale: destSnapshot.isStale,
+    venue: destSnapshot.venue,
+  };
 }

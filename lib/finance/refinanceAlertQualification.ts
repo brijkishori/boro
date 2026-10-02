@@ -1,19 +1,23 @@
-import { formatUnits } from 'viem';
-import type { PositionSnapshot } from '@/lib/adapters';
+import { formatUnits, type Address } from 'viem';
+import { readPosition, type PositionSnapshot } from '@/lib/adapters';
 import { appUrl } from '@/lib/alerts';
+import { publicClient } from '@/lib/rpc';
 import {
+  ACTIONABLE_FRESHNESS_MAX_AGE_MS,
   buildMigrationPlan,
   calculateRateStability,
   calculateSafetyProjection,
   findRefinanceCandidates,
+  type ActionableMarketSnapshot,
   type FreshnessState,
   type MarginComparison,
   type MigrationPlan,
   type RefinanceCandidate,
   type RefinanceMarketBaseline,
-  STALE_THRESHOLD_MS,
 } from '@/lib/finance/refinance';
-import { type Venue } from '@/lib/protocol';
+
+export type { ActionableMarketSnapshot };
+import { type ChainId, type Venue } from '@/lib/protocol';
 import { storeJson, storeSetJson, type Json } from '@/lib/store';
 
 export type QualificationStatus = 'QUALIFIED_FOR_REVIEW' | 'NOT_QUALIFIED';
@@ -70,6 +74,7 @@ export type RefinanceQualificationSnapshot = {
   freshness: FreshnessState;
   debt: number;
   timestamp: number;
+  isSimulated?: boolean;
 };
 
 export type RefinanceQualification = {
@@ -79,6 +84,7 @@ export type RefinanceQualification = {
   primaryReason: QualificationReason;
   plan: MigrationPlan;
   snapshot: RefinanceQualificationSnapshot;
+  isSimulated?: boolean;
 };
 
 export type StoredRefinanceAlertState = {
@@ -265,10 +271,12 @@ export function findActionableRefinanceOpportunity(input: {
   const threshold = sourceVenue.collateralRisk?.liquidationLtv ?? sourceVenue.collateralRisk?.liquidationThreshold ?? sourceVenue.maxLtv;
 
   const fetchedAt = sourceVenue.freshness?.fetchedAt ?? 0;
-  const isSourceStale = fetchedAt > 0 && (now - fetchedAt > STALE_THRESHOLD_MS);
-  const sourceFreshness: FreshnessState = isSourceStale
-    ? 'stale'
-    : (sourceVenue.freshness ? 'fresh' : 'unavailable');
+  const isSourceStale = fetchedAt <= 0 || (now - fetchedAt > (ACTIONABLE_FRESHNESS_MAX_AGE_MS + 5_000));
+  const sourceFreshness: FreshnessState = !sourceVenue.freshness || fetchedAt <= 0
+    ? 'unavailable'
+    : isSourceStale
+      ? 'stale'
+      : 'fresh';
 
   const sourceBaseline: RefinanceMarketBaseline = {
     id: sourceVenue.id,
@@ -298,7 +306,7 @@ export function findActionableRefinanceOpportunity(input: {
     stability: calculateRateStability(sourceVenue.borrowApr, sourceVenue.rateHistory),
   };
 
-  const candidates = findRefinanceCandidates(sourceVenue, allVenues, now);
+  const candidates = findRefinanceCandidates(sourceVenue, allVenues, now, ACTIONABLE_FRESHNESS_MAX_AGE_MS);
   const qualifiedPlans: RefinanceQualification[] = [];
 
   for (const candidate of candidates) {
@@ -363,10 +371,13 @@ export function recheckRefinanceCandidate(
   const oraclePrice = sourceVenue.priceUsd > 0 ? sourceVenue.priceUsd : 0;
   const sourceThreshold = sourceVenue.collateralRisk?.liquidationLtv ?? sourceVenue.collateralRisk?.liquidationThreshold ?? sourceVenue.maxLtv ?? 0;
 
-  const isSourceStale = Boolean(sourceVenue.freshness?.fetchedAt && (now - sourceVenue.freshness.fetchedAt > STALE_THRESHOLD_MS));
-  const sourceFreshness: FreshnessState = isSourceStale
-    ? 'stale'
-    : (sourceVenue.freshness ? 'fresh' : 'unavailable');
+  const fetchedAt = sourceVenue.freshness?.fetchedAt ?? 0;
+  const isSourceStale = fetchedAt <= 0 || (now - fetchedAt > (ACTIONABLE_FRESHNESS_MAX_AGE_MS + 5_000));
+  const sourceFreshness: FreshnessState = !sourceVenue.freshness || fetchedAt <= 0
+    ? 'unavailable'
+    : isSourceStale
+      ? 'stale'
+      : 'fresh';
 
   const freshSourceBaseline: RefinanceMarketBaseline = {
     ...prevPlan.sourceMarket,
@@ -385,7 +396,7 @@ export function recheckRefinanceCandidate(
     ),
   };
 
-  const candidateCandidates = findRefinanceCandidates(sourceVenue, [candidateVenue], now);
+  const candidateCandidates = findRefinanceCandidates(sourceVenue, [candidateVenue], now, ACTIONABLE_FRESHNESS_MAX_AGE_MS);
   const freshCandidate = candidateCandidates.find((c) => c.id === candidateVenue.id);
   if (!freshCandidate) {
     return {
@@ -526,4 +537,137 @@ export function buildRefinanceDeepLink(
 ): string {
   const base = baseUrl ?? appUrl();
   return `${base}/risk?market=${encodeURIComponent(sourceMarketId)}&tab=refinance&candidate=${encodeURIComponent(candidateMarketId)}&source=alert`;
+}
+
+/**
+ * Evaluates live borrow venues for an address using fresh on-chain position reads,
+ * real gas prices, and current market rates.
+ * Returns the highest-qualifying refinance opportunity or indicates no qualification.
+ */
+export async function evaluateLiveRefinanceOpportunity(input: {
+  address: Address;
+  venues: Venue[];
+  rules?: {
+    refinanceUsd?: number;
+    healthUrgent?: number;
+    minYearlySavingsUsd?: number;
+    minHealthFactor?: number;
+    minMonthlySavingsUsd?: number;
+    minAprImprovementBps?: number;
+  };
+  ethPriceUsd?: number | null;
+  readPositionFn?: (venue: Venue, address: Address) => Promise<PositionSnapshot | null>;
+  getGasPriceFn?: (chainId: number) => Promise<bigint | null>;
+  now?: number;
+}): Promise<{
+  isQualified: boolean;
+  qualification?: RefinanceQualification;
+  sourceVenue?: Venue;
+  reason?: string;
+}> {
+  const { address, venues } = input;
+  const now = input.now ?? Date.now();
+  const readPos = input.readPositionFn ?? readPosition;
+  const getGas = input.getGasPriceFn ?? (async (chainId: number) => {
+    try {
+      return await publicClient(chainId as ChainId).getGasPrice();
+    } catch {
+      return null;
+    }
+  });
+
+  const minYearly = input.rules?.minYearlySavingsUsd ?? input.rules?.refinanceUsd ?? DEFAULT_QUALIFICATION_CRITERIA.minYearlySavingsUsd;
+  const minHf = input.rules?.minHealthFactor ?? input.rules?.healthUrgent ?? DEFAULT_QUALIFICATION_CRITERIA.minHealthFactor;
+  const criteria: RefinanceAlertQualificationCriteria = {
+    minYearlySavingsUsd: minYearly,
+    minHealthFactor: minHf,
+    minMonthlySavingsUsd: input.rules?.minMonthlySavingsUsd ?? DEFAULT_QUALIFICATION_CRITERIA.minMonthlySavingsUsd,
+    minAprImprovementBps: input.rules?.minAprImprovementBps ?? DEFAULT_QUALIFICATION_CRITERIA.minAprImprovementBps,
+  };
+
+  const borrowVenues = venues.filter((v) => v.action === 'borrow');
+  let hasOpenPosition = false;
+
+  for (const venue of borrowVenues) {
+    let snapshot: PositionSnapshot | null = null;
+    try {
+      snapshot = await readPos(venue, address);
+    } catch {
+      snapshot = null;
+    }
+
+    if (!snapshot || snapshot.debt <= 0n || snapshot.collateral <= 0n) continue;
+    hasOpenPosition = true;
+
+    const debtUsd = Number(formatUnits(snapshot.debt, venue.loanDecimals));
+    if (debtUsd <= 0) continue;
+
+    const gasPriceWei = await getGas(venue.chainId);
+
+    // Log candidates evaluated for this source venue
+    const candidates = findRefinanceCandidates(venue, venues, now, ACTIONABLE_FRESHNESS_MAX_AGE_MS);
+    for (const candidate of candidates) {
+      console.log(
+        `[ALERT TEST] mode=LIVE_TEST env=${process.env.NODE_ENV ?? 'development'} ` +
+        `sourceMarket=${venue.id} candidateMarket=${candidate.id} ` +
+        `sourceApr=${venue.borrowApr} candidateApr=${candidate.currentApr} ` +
+        `fetchedAt=${candidate.venue.freshness?.fetchedAt ?? 0}`,
+      );
+    }
+
+    const actionable = findActionableRefinanceOpportunity({
+      sourceVenue: venue,
+      snapshot,
+      allVenues: venues,
+      criteria,
+      gasPriceWei,
+      ethPriceUsd: input.ethPriceUsd,
+      now,
+    });
+
+    if (actionable && actionable.isQualified) {
+      // Pre-send revalidation: requalify from fresh position/debt, fresh gas price, and current venues
+      let freshDebt = debtUsd;
+      let freshCollateral = Number(formatUnits(snapshot.collateral, venue.assetDecimals));
+      try {
+        const reloaded = await readPos(venue, address);
+        if (reloaded) {
+          freshDebt = Number(formatUnits(reloaded.debt, venue.loanDecimals));
+          freshCollateral = Number(formatUnits(reloaded.collateral, venue.assetDecimals));
+        }
+      } catch {}
+
+      const freshGasPrice = await getGas(venue.chainId);
+
+      const rechecked = recheckRefinanceCandidate(actionable, venues, criteria, now, {
+        currentDebt: freshDebt,
+        currentCollateral: freshCollateral,
+        gasPriceWei: freshGasPrice,
+        ethPriceUsd: input.ethPriceUsd,
+      });
+
+      if (rechecked.isQualified) {
+        console.log(
+          `[ALERT TEST] mode=LIVE_TEST env=${process.env.NODE_ENV ?? 'development'} ` +
+          `sourceMarket=${venue.id} candidateMarket=${rechecked.snapshot.destinationMarketId} ` +
+          `sourceApr=${rechecked.snapshot.currentApr} candidateApr=${rechecked.snapshot.candidateApr} ` +
+          `fetchedAt=${venue.freshness?.fetchedAt ?? now} qualified=true`,
+        );
+        return {
+          isQualified: true,
+          qualification: rechecked,
+          sourceVenue: venue,
+        };
+      }
+    }
+  }
+
+  console.log(
+    `[ALERT TEST] mode=LIVE_TEST env=${process.env.NODE_ENV ?? 'development'} ` +
+    `address=${address} result=NO_QUALIFIED_REFINANCE_OPPORTUNITY hasOpenPosition=${hasOpenPosition}`,
+  );
+  return {
+    isQualified: false,
+    reason: 'NO_QUALIFIED_REFINANCE_OPPORTUNITY',
+  };
 }

@@ -1,7 +1,10 @@
 import { getAddress, isAddress } from 'viem';
-import { type AlertKind, sampleAlertByKind, sampleAlertEmails } from '@/lib/alertEmail';
+import { type AlertKind, refinanceAlert, sampleAlertByKind, sampleAlertEmails } from '@/lib/alertEmail';
 import { loadSubscriber } from '@/lib/alerts';
+import { buildRefinanceDeepLink, evaluateLiveRefinanceOpportunity } from '@/lib/finance/refinanceAlertQualification';
 import { mailConfigured, sendMail } from '@/lib/mail';
+import { fetchUsdPrices } from '@/lib/prices';
+import { getRates } from '@/lib/rates';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,8 +43,62 @@ export async function POST(request: Request) {
   if (Date.now() - last < wait) return Response.json({ error: 'Wait a few seconds before sending that test again.' }, { status: 429 });
   recent.set(bucket, Date.now());
 
-  const samples = kind ? [sampleAlertByKind(address, kind)].filter((sample): sample is NonNullable<typeof sample> => Boolean(sample)) : sampleAlertEmails(address);
-  if (samples.length === 0) return Response.json({ error: 'Unknown alert type.' }, { status: 400 });
+  if (kind === 'refinance') {
+    const rates = await getRates({
+      bypassCache: true,
+      strict: true,
+    });
+    const usdPrices = await fetchUsdPrices().catch(() => ({ ethUsd: 0, btcUsd: 0 }));
+    const ethPriceUsd = usdPrices.ethUsd > 0 ? usdPrices.ethUsd : null;
+
+    const liveResult = await evaluateLiveRefinanceOpportunity({
+      address,
+      venues: rates.venues,
+      rules: subscriber.rules,
+      ethPriceUsd,
+    });
+
+    if (!liveResult.isQualified || !liveResult.qualification || !liveResult.sourceVenue) {
+      return Response.json({
+        ok: true,
+        sent: false,
+        reason: 'NO_QUALIFIED_REFINANCE_OPPORTUNITY',
+      });
+    }
+
+    const qualification = liveResult.qualification;
+    const deepLink = buildRefinanceDeepLink(liveResult.sourceVenue.id, qualification.snapshot.destinationMarketId);
+    const email = refinanceAlert(address, qualification, { deepLinkUrl: deepLink, now: Date.now() });
+
+    await sendMail(
+      subscriber.email,
+      `[TEST] ${email.subject}`,
+      `This is a test email. Production alerts will not include this first line.\n\n${email.text}`,
+      `<p style="font-family:Arial,sans-serif;font-size:13px;color:#666">This is a test email. Production alerts will not include this line.</p>${email.html}`,
+    );
+
+    return Response.json({
+      ok: true,
+      sent: true,
+      to: subscriber.email,
+      kinds: ['refinance'],
+    });
+  }
+
+  if (kind) {
+    const sample = sampleAlertByKind(address, kind);
+    if (!sample) return Response.json({ error: 'Unknown alert type.' }, { status: 400 });
+    await sendMail(
+      subscriber.email,
+      `[TEST] ${sample.subject}`,
+      `This is a test email. Production alerts will not include this first line.\n\n${sample.text}`,
+      `<p style="font-family:Arial,sans-serif;font-size:13px;color:#666">This is a test email. Production alerts will not include this line.</p>${sample.html}`,
+    );
+    return Response.json({ ok: true, sent: 1, to: subscriber.email, kinds: [kind] });
+  }
+
+  // All samples requested
+  const samples = sampleAlertEmails(address);
   for (const sample of samples) {
     await sendMail(
       subscriber.email,
@@ -50,5 +107,36 @@ export async function POST(request: Request) {
       `<p style="font-family:Arial,sans-serif;font-size:13px;color:#666">This is a test email. Production alerts will not include this line.</p>${sample.html}`,
     );
   }
-  return Response.json({ ok: true, sent: samples.length, to: subscriber.email, kinds: samples.map((sample) => sample.kind) });
+  const sentKinds = samples.map((sample) => sample.kind);
+
+  // Evaluate live refinance test for "all" mode
+  const rates = await getRates({
+    bypassCache: true,
+    strict: true,
+  });
+  const usdPrices = await fetchUsdPrices().catch(() => ({ ethUsd: 0, btcUsd: 0 }));
+  const ethPriceUsd = usdPrices.ethUsd > 0 ? usdPrices.ethUsd : null;
+
+  const liveResult = await evaluateLiveRefinanceOpportunity({
+    address,
+    venues: rates.venues,
+    rules: subscriber.rules,
+    ethPriceUsd,
+  });
+
+  if (liveResult.isQualified && liveResult.qualification && liveResult.sourceVenue) {
+    const qualification = liveResult.qualification;
+    const deepLink = buildRefinanceDeepLink(liveResult.sourceVenue.id, qualification.snapshot.destinationMarketId);
+    const email = refinanceAlert(address, qualification, { deepLinkUrl: deepLink, now: Date.now() });
+
+    await sendMail(
+      subscriber.email,
+      `[TEST] ${email.subject}`,
+      `This is a test email. Production alerts will not include this first line.\n\n${email.text}`,
+      `<p style="font-family:Arial,sans-serif;font-size:13px;color:#666">This is a test email. Production alerts will not include this line.</p>${email.html}`,
+    );
+    sentKinds.push('refinance');
+  }
+
+  return Response.json({ ok: true, sent: sentKinds.length, to: subscriber.email, kinds: sentKinds });
 }
