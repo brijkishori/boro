@@ -8,11 +8,13 @@ import type { EarlyWarning } from '@/lib/finance/earlyWarning';
 import { buildEmergencyExecutionPlan, WalletResources, ExecutionPlan, PreparedExecution, prepareExecutionReview, deriveHypotheticalPosition } from '@/lib/finance/executionPlanner';
 import { StatusBadge } from '@/components/RiskStatus';
 import { riskSeverityStatus } from '@/lib/finance/riskStatus';
-import { chainLabel, isChainId, type Venue, type ChainId, type ProtocolId } from '@/lib/protocol';
-import { buildPlannerCards } from '@/lib/finance/actionPlanner';
+import { chainLabel, isChainId, type Venue, type ChainId } from '@/lib/protocol';
+import { buildPlannerCards, stageRemedyHandoff } from '@/lib/finance/actionPlanner';
+import { buildPhase6D1RepayHandoff, phase6D1RepayEligibility } from '@/lib/finance/assistedRepay';
 import { publicClient } from '@/lib/rpc';
 import { fetchFreshConfirmReads } from '@/lib/finance/fetchConfirm';
-import type { Address } from 'viem';
+import { formatUnits, type Address } from 'viem';
+import { useEthUsd } from '@/components/useNetworkFee';
 
 export default function EmergencyConsole({
   report,
@@ -22,6 +24,7 @@ export default function EmergencyConsole({
   warning,
   initialScenario = null,
   initialExplorePreview = false,
+  venue,
 }: {
   report: RiskMonitorReport;
   input: RiskMonitorInput;
@@ -30,6 +33,7 @@ export default function EmergencyConsole({
   warning?: EarlyWarning;
   initialScenario?: 'WATCH' | 'PREPARE' | 'ACT' | 'URGENT' | null;
   initialExplorePreview?: boolean;
+  venue?: Venue;
 }) {
   const [explorePreview, setExplorePreview] = useState(initialExplorePreview);
   const [selectedScenario, setSelectedScenario] = useState<'WATCH' | 'PREPARE' | 'ACT' | 'URGENT' | null>(initialScenario);
@@ -320,7 +324,7 @@ export default function EmergencyConsole({
             <div className="space-y-3">
               <p className="font-semibold">ACTION OPTIONS</p>
               {plans.map((plan) => (
-                <EmergencyPlanCard key={plan.id} plan={plan} input={effectiveInput} chainName={currentChainName} />
+                <EmergencyPlanCard key={plan.id} plan={plan} input={effectiveInput} chainName={currentChainName} venue={venue} />
               ))}
             </div>
           )}
@@ -358,41 +362,23 @@ export default function EmergencyConsole({
   );
 }
 
-function EmergencyPlanCard({ plan, input, chainName }: { plan: ExecutionPlan, input: RiskMonitorInput, chainName: string }) {
+function EmergencyPlanCard({ plan, input, chainName, venue }: { plan: ExecutionPlan, input: RiskMonitorInput, chainName: string, venue?: Venue }) {
   const [preparing, setPreparing] = useState(false);
   const [prepared, setPrepared] = useState<PreparedExecution | null>(null);
+  const ethUsd = useEthUsd();
   
   const debtReq = plan.requiredAssets.debtAssetRequired;
   const collReq = plan.requiredAssets.collateralRequired;
   const isMixed = debtReq > 0 && collReq > 0;
+  const eligibility = prepared && venue
+    ? phase6D1RepayEligibility({ plan, prepared, venue, wallet: input.wallet })
+    : undefined;
   
   async function handlePrepare() {
     setPreparing(true);
     try {
-      // Reconstruct Venue from input
-      // For this test/phase we mock venue fetching or reconstruct it loosely
-      const chainId: ChainId = isChainId(input.chainId) ? input.chainId : 8453;
-      const protocol: ProtocolId = (input.protocol === 'morpho' || input.protocol === 'aave' || input.protocol === 'compound' || input.protocol === 'spark' || input.protocol === 'moonwell') ? input.protocol : 'aave';
-      const venue: Venue = {
-        id: input.marketId,
-        protocol,
-        action: 'borrow',
-        chainId,
-        assetSymbol: input.collateralAsset,
-        assetKind: 'custodial',
-        assetAddress: input.collateralAsset as Address,
-        assetDecimals: 8, // mostly cbBTC
-        loanSymbol: input.debtAsset,
-        loanAddress: input.debtAsset as Address,
-        loanDecimals: 6, // mostly USDC
-        borrowApr: input.currentBorrowApr ?? 0,
-        supplyApr: 0,
-        liquidityUsd: input.availableLiquidity ?? 0,
-        priceUsd: plan.sourcePosition.oraclePrice,
-        maxLtv: input.liquidationThreshold, // rough mapping
-        aave: input.protocol === 'aave' ? { pool: input.marketId as Address, aToken: input.collateralAsset as Address, variableDebtToken: input.debtAsset as Address } : undefined,
-        morpho: input.protocol === 'morpho' ? { marketId: input.marketId as `0x${string}`, oracle: input.marketId as Address, lltv: BigInt(Math.floor(input.liquidationThreshold * 1e18)).toString(), loanToken: input.debtAsset as Address, collateralToken: input.collateralAsset as Address, irm: '0x0000000000000000000000000000000000000000' } : undefined,
-      };
+      if (!venue) throw new Error('Verified market definition unavailable');
+      if (!input.wallet) throw new Error('Wallet address unavailable');
 
       if (plan.hypothetical) {
         const freshPosition = {
@@ -424,38 +410,35 @@ function EmergencyPlanCard({ plan, input, chainName }: { plan: ExecutionPlan, in
       const readsDebt = debtReq > 0 ? await fetchFreshConfirmReads({ venue, user: input.wallet as Address, action: 'REPAY' }) : null;
       const readsColl = collReq > 0 ? await fetchFreshConfirmReads({ venue, user: input.wallet as Address, action: 'SUPPLY_COLLATERAL' }) : null;
       const reads = readsDebt || readsColl;
-      
       if (!reads) throw new Error('Could not fetch fresh reads');
 
+      const freshVenue = reads.venue;
       const freshPosition = {
-        debt: reads.position.debt > 0n ? Number(reads.position.debt) / 1e6 : 0,
-        collateralAmount: reads.position.collateral > 0n ? Number(reads.position.collateral) / 1e8 : 0,
-        oraclePrice: venue.priceUsd ?? 0,
+        debt: Number(formatUnits(reads.position.debt, freshVenue.loanDecimals)),
+        collateralAmount: Number(formatUnits(reads.position.collateral, freshVenue.assetDecimals)),
+        oraclePrice: freshVenue.priceUsd ?? 0,
       };
-      
       const freshWalletBalances = {
-        debtAsset: readsDebt ? Number(readsDebt.walletBalance) / 1e6 : null,
-        collateralAsset: readsColl ? Number(readsColl.walletBalance) / 1e8 : null,
+        debtAsset: readsDebt ? Number(formatUnits(readsDebt.walletBalance, freshVenue.loanDecimals)) : null,
+        collateralAsset: readsColl ? Number(formatUnits(readsColl.walletBalance, freshVenue.assetDecimals)) : null,
       };
-
-      const client = publicClient(venue.chainId);
+      const client = publicClient(freshVenue.chainId);
+      const gasPriceWei = await client.getGasPrice().catch(() => undefined);
 
       const review = await prepareExecutionReview(
         plan,
         input,
-        reads.venue,
+        freshVenue,
         input.wallet as Address,
         client,
         freshPosition,
         freshWalletBalances,
-        undefined,
-        undefined
+        gasPriceWei,
+        ethUsd ?? undefined
       );
       setPrepared(review);
     } catch (err) {
       console.error(err);
-      // In a real app we'd surface this to the UI nicely. 
-      // For now we set a mocked prepared execution that is BLOCKED
       setPrepared({
         planId: plan.id,
         preparedAt: Date.now(),
@@ -476,14 +459,33 @@ function EmergencyPlanCard({ plan, input, chainName }: { plan: ExecutionPlan, in
         blockingIssues: [err instanceof Error ? err.message : 'Unknown preparation error'],
         warnings: [],
         requiresUserConfirmation: true,
+        executable: false,
       });
     } finally {
       setPreparing(false);
     }
   }
 
+  function continueToRepay() {
+    if (!prepared || !venue) return;
+    const decision = phase6D1RepayEligibility({ plan, prepared, venue, wallet: input.wallet });
+    if (!decision.eligible) return;
+    const handoff = buildPhase6D1RepayHandoff({ plan, prepared, venue, wallet: input.wallet });
+    stageRemedyHandoff(window.sessionStorage, handoff);
+    window.location.assign(`/?tab=repay&market=${encodeURIComponent(venue.id)}`);
+  }
+
   if (prepared) {
-    return <PreparedReviewUI prepared={prepared} onCancel={() => setPrepared(null)} input={input} chainName={chainName} />;
+    return (
+      <PreparedReviewUI
+        prepared={prepared}
+        onCancel={() => setPrepared(null)}
+        input={input}
+        chainName={chainName}
+        phase6D1Eligibility={eligibility}
+        onContinueToRepay={eligibility?.eligible ? continueToRepay : undefined}
+      />
+    );
   }
   
   return (
@@ -546,12 +548,19 @@ function EmergencyPlanCard({ plan, input, chainName }: { plan: ExecutionPlan, in
             </div>
           )}
         </div>
-        
         {plan.blockingIssues.length > 0 && (
-          <div className="text-red-500 mt-1">
+          <div className="text-red-500 mt-2">
             <span className="font-semibold">BLOCKED:</span>
             <ul className="list-disc pl-4">
               {plan.blockingIssues.map(issue => <li key={issue}>{issue}</li>)}
+            </ul>
+          </div>
+        )}
+        {plan.warnings.length > 0 && (
+          <div className="text-orange-500 mt-2">
+            <span className="font-semibold">ATTENTION:</span>
+            <ul className="list-disc pl-4">
+              {plan.warnings.map(warning => <li key={warning}>{warning}</li>)}
             </ul>
           </div>
         )}
@@ -565,7 +574,7 @@ function EmergencyPlanCard({ plan, input, chainName }: { plan: ExecutionPlan, in
               <li key={idx}>{step.label}</li>
             ))}
           </ol>
-          
+
           <div className="space-y-1">
             <p className="font-semibold">Readiness Checklist</p>
             <p>Position fresh {isFresh(plan.freshness.positionFetchedAt) ? '✓' : '✕'}</p>
@@ -577,20 +586,23 @@ function EmergencyPlanCard({ plan, input, chainName }: { plan: ExecutionPlan, in
             <p>Allowance known {(debtReq > 0 && plan.walletResources.debtAssetAllowance === null) || (collReq > 0 && plan.walletResources.collateralAllowance === null) ? '?' : '✓'}</p>
             <p>Liquidity available ✓</p>
           </div>
-          
+
           {(!isFresh(plan.freshness.positionFetchedAt) || !isFresh(plan.freshness.oracleFetchedAt)) && (
             <p className="text-red-500">Refresh required before relying on this plan.</p>
           )}
         </div>
       </details>
-      
-      {plan.readiness === 'READY' && (
-        <div className="pt-2">
-          <button type="button" className="rounded border px-2 py-1 bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50" onClick={handlePrepare} disabled={preparing}>
-            {preparing ? 'Preparing...' : 'Review action'}
-          </button>
-        </div>
-      )}
+
+      {plan.readiness === 'READY' && !plan.hypothetical ? (
+        <button type="button" className="rounded border px-2 py-1" onClick={handlePrepare} disabled={preparing || !venue}>
+          {preparing ? 'Refreshing & simulating…' : 'Prepare action review'}
+        </button>
+      ) : plan.hypothetical ? (
+        <button type="button" className="rounded border px-2 py-1" onClick={handlePrepare} disabled={preparing || !venue}>
+          {preparing ? 'Preparing projection…' : 'Review hypothetical action'}
+        </button>
+      ) : null}
+      {!venue && <p className="text-[10px] text-muted-foreground">Verified market definition is required before preparing an action.</p>}
     </div>
   );
 }
@@ -620,7 +632,7 @@ function isFresh(timestamp: number | null): boolean {
   return Date.now() - timestamp < 5 * 60_000;
 }
 
-export function PreparedReviewUI({ prepared, onCancel, input, chainName }: { prepared: PreparedExecution; onCancel: () => void; input: RiskMonitorInput; chainName: string }) {
+export function PreparedReviewUI({ prepared, onCancel, input, chainName, phase6D1Eligibility, onContinueToRepay }: { prepared: PreparedExecution; onCancel: () => void; input: RiskMonitorInput; chainName: string; phase6D1Eligibility?: { eligible: boolean; reason: string | null }; onContinueToRepay?: () => void }) {
   const isReady = prepared.readiness === 'READY' && prepared.executable !== false;
   const actionTitle = prepared.transactions.map(t => `${t.action} ${t.amount} ${t.asset}`).join(' & ');
 
@@ -707,11 +719,21 @@ export function PreparedReviewUI({ prepared, onCancel, input, chainName }: { pre
           <p className="font-semibold text-green-600 mb-2">Ready for execution</p>
           <div className="flex gap-2">
             <button type="button" className="rounded border px-3 py-2 flex-1" onClick={onCancel}>Cancel</button>
-            <button type="button" className="rounded border px-3 py-2 bg-gray-100 text-gray-400 cursor-not-allowed flex-1" disabled>
-              Execute action
-            </button>
+            {onContinueToRepay && phase6D1Eligibility?.eligible ? (
+              <button type="button" className="rounded border px-3 py-2 bg-foreground text-background flex-1" onClick={onContinueToRepay}>
+                Continue to repayment
+              </button>
+            ) : (
+              <button type="button" className="rounded border px-3 py-2 bg-gray-100 text-gray-400 cursor-not-allowed flex-1" disabled>
+                Execute action
+              </button>
+            )}
           </div>
-          <p className="text-[10px] text-muted-foreground mt-2 text-center">Wallet execution will be enabled in the next phase.</p>
+          {onContinueToRepay && phase6D1Eligibility?.eligible ? (
+            <p className="text-[10px] text-muted-foreground mt-2 text-center">Phase 6D.1: Morpho Base partial repay only. The repayment screen revalidates the live position again before any wallet request.</p>
+          ) : (
+            <p className="text-[10px] text-muted-foreground mt-2 text-center">{phase6D1Eligibility?.reason ?? 'This action remains review-only in Phase 6D.1.'}</p>
+          )}
         </div>
       ) : (
         <div className="pt-3 border-t mt-3 flex gap-2">

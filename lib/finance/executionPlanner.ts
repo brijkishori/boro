@@ -2,8 +2,8 @@ import { ProposedRemedy, RiskMonitorInput } from '@/lib/finance/riskMonitor';
 import { priceAtHealthFactor } from '@/lib/finance/liquidation';
 import { erc20Abi } from '@/lib/abi';
 import { parseUnits, type Address, type PublicClient } from 'viem';
-import { type Venue } from '@/lib/protocol';
-import { adapterFor } from '@/lib/adapters';
+import { protocolMarketId, type Venue } from '@/lib/protocol';
+import { adapterFor, approveCall } from '@/lib/adapters';
 
 export type ActionStepType =
   | 'REPAY'
@@ -204,6 +204,10 @@ export async function prepareExecutionReview(
     blockingIssues.push('Wrong wallet network');
     readiness = 'BLOCKED';
   }
+  if (protocolMarketId(venue).toLowerCase() !== input.marketId.toLowerCase()) {
+    blockingIssues.push('Market identity changed');
+    readiness = 'BLOCKED';
+  }
 
   // Drift check logic...
   let drift = false;
@@ -280,14 +284,44 @@ export async function prepareExecutionReview(
       exactAllowances[step.asset] = Number(allowance) / (10 ** decimals);
 
       if (allowance < amountBigInt) {
+        let approvalGas: bigint | null = null;
+        let approvalStatus: PreparedTransaction['simulationStatus'] = isHypothetical ? 'UNAVAILABLE' : 'PASSED';
+        let approvalReason: string | undefined;
+        if (!isHypothetical) {
+          try {
+            const approval = approveCall(venue, spender, amountBigInt, step.type === 'REPAY' ? 'loan' : 'asset');
+            const sim = await client.simulateContract({
+              account: user,
+              address: approval.address,
+              abi: approval.abi,
+              functionName: approval.functionName,
+              args: approval.args,
+            });
+            try {
+              const requestData = hasHexData(sim.request) ? sim.request.data : undefined;
+              approvalGas = await client.estimateGas({
+                account: user,
+                to: approval.address,
+                ...(requestData ? { data: requestData } : {}),
+              });
+              totalGasUnits += approvalGas;
+            } catch {}
+          } catch (e: unknown) {
+            approvalStatus = 'FAILED';
+            approvalReason = e instanceof Error ? e.message : String(e);
+            blockingIssues.push('Approval simulation reverted');
+            readiness = 'BLOCKED';
+          }
+        }
         transactions.push({
           action: 'APPROVE_TOKEN',
           targetContract: tokenAddress,
           asset: step.asset,
           amount: step.amount,
           approvalRequired: false,
-          estimatedGas: null,
-          simulationStatus: 'UNAVAILABLE',
+          estimatedGas: approvalGas ? Number(approvalGas) : null,
+          simulationStatus: approvalStatus,
+          revertReason: approvalReason,
         });
       }
     } catch {
@@ -295,12 +329,14 @@ export async function prepareExecutionReview(
       readiness = 'BLOCKED';
     }
 
-    // Simulation
+    // Simulation. If approval is required, the protocol call is intentionally deferred:
+    // the existing RepayFlow will confirm approval first and revalidate live state before repay.
     let simStatus: PreparedTransaction['simulationStatus'] = 'UNAVAILABLE';
     let revertReason: string | undefined;
     let gasUsed: bigint | null = null;
+    const approvalRequired = allowance !== null && allowance < amountBigInt;
 
-    if (!isHypothetical) {
+    if (!isHypothetical && !approvalRequired) {
       try {
         const sim = await client.simulateContract({
           account: user,
@@ -327,6 +363,8 @@ export async function prepareExecutionReview(
         blockingIssues.push('Simulation reverted');
         readiness = 'BLOCKED';
       }
+    } else if (!isHypothetical && approvalRequired) {
+      warnings.push(`${step.label} simulation deferred until token approval is confirmed.`);
     }
 
     transactions.push({
@@ -334,7 +372,7 @@ export async function prepareExecutionReview(
       targetContract: writeCall.address,
       asset: step.asset,
       amount: step.amount,
-      approvalRequired: allowance !== null && allowance < amountBigInt,
+      approvalRequired,
       estimatedGas: gasUsed ? Number(gasUsed) : null,
       simulationStatus: simStatus,
       revertReason,
@@ -377,7 +415,12 @@ export async function prepareExecutionReview(
     chainId: input.chainId,
     marketId: input.marketId,
 
-    freshBeforeState: plan.sourcePosition,
+    freshBeforeState: {
+      debt: freshPosition.debt,
+      collateralAmount: freshPosition.collateralAmount,
+      oraclePrice: freshPosition.oraclePrice,
+      liquidationThreshold: plan.sourcePosition.liquidationThreshold,
+    },
     
     transactions,
     exactAllowances,

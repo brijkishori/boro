@@ -109,9 +109,11 @@ export default function AlertSettings({ loans = [] }: { loans?: OpenPosition[] }
       if (body.sent === false) {
         toast.info(body.reason === 'NO_QUALIFIED_REFINANCE_OPPORTUNITY'
           ? 'No qualified refinance opportunity found for your position at live rates.'
-          : `No test email sent: ${body.reason ?? 'not qualified'}`);
+          : body.reason === 'NO_OPEN_LOAN'
+            ? 'No open loan was found, so there is no live loan data to test.'
+            : `No test email sent: ${body.reason ?? 'not qualified'}`);
       } else {
-        toast.success(kind === 'all' ? `Sent ${body.sent ?? 8} test emails.` : 'Test email sent. Check the inbox.');
+        toast.success(kind === 'all' ? `Sent ${body.sent ?? 0} live-data test emails.` : 'Live-data test email sent. Check the inbox.');
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not send test email.');
@@ -136,7 +138,10 @@ export default function AlertSettings({ loans = [] }: { loans?: OpenPosition[] }
               Liquidation-risk messages, a weekly digest (skipped under $1), and a monthly statement will go to this address for the connected wallet.
             </p>
             <details className="rounded-lg border px-3 py-2">
-              <summary className="cursor-pointer text-xs font-semibold">Sample email tests</summary>
+              <summary className="cursor-pointer text-xs font-semibold">Live-data email tests</summary>
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                Tests use your current on-chain position and fresh market data. A test can show that the configured threshold is not currently breached. Refinance is sent only when a live opportunity actually qualifies.
+              </p>
               <div className="mt-2 grid grid-cols-2 gap-2">
                 {TEST_ALERT_OPTIONS.map((option) => (
                   <Button
@@ -152,7 +157,7 @@ export default function AlertSettings({ loans = [] }: { loans?: OpenPosition[] }
                 ))}
               </div>
               <Button type="button" variant="ghost" className="mt-2 h-9 w-full text-xs" disabled={testing !== null} onClick={() => void sendTest('all')}>
-                {testing === 'all' ? 'Sending all…' : 'Send all samples'}
+                {testing === 'all' ? 'Sending all…' : 'Send all live tests'}
               </Button>
             </details>
             <Button type="button" variant="outline" className="h-10 w-full" onClick={() => setEditing(true)}>

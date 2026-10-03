@@ -869,6 +869,7 @@ export default function RiskMonitor({
               }}
               networkContext={{ chainId: venue.chainId, marketId: venue.id, gasPriceWei: undefined }}
               warning={warning}
+              venue={shownVenue}
             />
           </section>
           <section className={tab === 'whatif' ? 'space-y-2' : 'hidden'}>

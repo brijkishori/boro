@@ -141,6 +141,8 @@ describe('Phase 6C: Emergency Action Review + Transaction Simulation', () => {
     );
     assert.ok(review.transactions.some(t => t.action === 'APPROVE_TOKEN'));
     assert.strictEqual(review.transactions.find(t => t.action === 'REPAY')?.approvalRequired, true);
+    assert.strictEqual(review.transactions.find(t => t.action === 'REPAY')?.simulationStatus, 'UNAVAILABLE');
+    assert.ok(review.warnings.some((warning) => warning.includes('simulation deferred')));
   });
 
   it('D. fresh wallet balance below required amount blocks review', async () => {
