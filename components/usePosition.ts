@@ -39,6 +39,14 @@ export function usePosition(venue: Venue | null, user: Address | undefined, enab
     refreshedEpoch.current = cacheEpoch;
     void refetch();
   }, [cacheEpoch, enabled, refetch]);
+  const verified = Boolean(
+    enabled
+    && reads.length > 0
+    && data
+    && data.length === reads.length
+    && data.every((row) => row.status === 'success'),
+  );
+
   const snapshot: PositionSnapshot = useMemo(() => {
     if (!venue || !adapter) return emptyPosition();
     const results = (data ?? []).map((row) => row.result);
@@ -47,5 +55,5 @@ export function usePosition(venue: Venue | null, user: Address | undefined, enab
       : adapter.parsePosition(venue, results);
     return cacheEpoch >= 0 ? overlayCachedPosition(venue, user, parsed) : parsed;
   }, [adapter, cacheEpoch, data, user, venue]);
-  return { snapshot, refetch, isFetching };
+  return { snapshot, refetch, isFetching, verified };
 }

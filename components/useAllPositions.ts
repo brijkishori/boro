@@ -14,6 +14,8 @@ export type OpenPosition = {
   snapshot: PositionSnapshot;
   /** Time of the successful on-chain position read. Not the market-quote timestamp. */
   observedAt?: number | null;
+  /** True only when this venue's current on-chain read completed successfully. */
+  verified?: boolean;
 };
 
 const lastByAddress = new Map<string, OpenPosition[]>();
@@ -103,9 +105,16 @@ export function useAllPositions(venues: Venue[], address: Address | undefined) {
   const parsed = useMemo(() => {
     const cacheKey = stableAddress?.toLowerCase();
     const previous = cacheKey ? lastByAddress.get(cacheKey) ?? [] : [];
-    if (!stableAddress) return { positions: previous, complete: false };
+    if (!stableAddress) {
+      return {
+        positions: previous.map((item) => ({ ...item, verified: false })),
+        complete: false,
+        verifiedVenueIds: [] as string[],
+      };
+    }
 
     const open: OpenPosition[] = [];
+    const verifiedVenueIds: string[] = [];
     let index = 0;
     let complete = Boolean(data);
     for (const venue of stableUnique) {
@@ -116,29 +125,60 @@ export function useAllPositions(venues: Venue[], address: Address | undefined) {
       if (!data || slice.length !== reads.length || slice.some((row) => row.status !== 'success')) {
         complete = false;
         const snapshot = overlayCachedPosition(venue, heldAddress, kept?.snapshot ?? emptyPosition());
-        if (isOpenPosition(venue, snapshot)) open.push({ venue, snapshot, observedAt: kept?.observedAt ?? null });
+        if (isOpenPosition(venue, snapshot)) {
+          open.push({ venue, snapshot, observedAt: kept?.observedAt ?? null, verified: false });
+        }
         continue;
       }
+      verifiedVenueIds.push(venue.id);
       const snapshot = overlayCachedPosition(
         venue,
         heldAddress,
         adapterFor(venue).parsePosition(venue, slice.map((row) => row.result)),
       );
-      if (isOpenPosition(venue, snapshot)) open.push({ venue, snapshot, observedAt: dataUpdatedAt > 0 ? dataUpdatedAt : null });
+      if (isOpenPosition(venue, snapshot)) {
+        open.push({
+          venue,
+          snapshot,
+          observedAt: dataUpdatedAt > 0 ? dataUpdatedAt : null,
+          verified: true,
+        });
+      }
     }
     if (data && index !== data.length) complete = false;
     if (!data || cacheEpoch > 0) {
       for (const venue of unique) {
         if (open.some((item) => venueKey(item.venue) === venueKey(venue))) continue;
         const cached = readFreshPosition(venue, heldAddress);
-        if (cached && isOpenPosition(venue, cached.snapshot)) open.push({ venue, snapshot: cached.snapshot, observedAt: cached.at });
+        if (cached && isOpenPosition(venue, cached.snapshot)) {
+          open.push({ venue, snapshot: cached.snapshot, observedAt: cached.at, verified: false });
+        }
       }
     }
 
     if (complete && cacheKey) lastByAddress.set(cacheKey, open);
-    if (!complete && open.length === 0 && previous.length > 0) return { positions: previous, complete: false };
-    return { positions: open.length > 0 || complete ? open : previous, complete };
+    if (!complete && open.length === 0 && previous.length > 0) {
+      return {
+        positions: previous.map((item) => ({ ...item, verified: false })),
+        complete: false,
+        verifiedVenueIds,
+      };
+    }
+    return {
+      positions: open.length > 0 || complete
+        ? open
+        : previous.map((item) => ({ ...item, verified: false })),
+      complete,
+      verifiedVenueIds,
+    };
   }, [cacheEpoch, data, dataUpdatedAt, heldAddress, unique, stableAddress, stableUnique]);
 
-  return { positions: parsed.positions, isLoading: isLoading && parsed.positions.length === 0, isFetching, refetch };
+  return {
+    positions: parsed.positions,
+    verifiedVenueIds: parsed.verifiedVenueIds,
+    complete: parsed.complete,
+    isLoading: isLoading && parsed.positions.length === 0,
+    isFetching,
+    refetch,
+  };
 }

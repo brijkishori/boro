@@ -323,6 +323,48 @@ export function findOpenEpisode(episodes: LoanEpisode[], key: string) {
   return episodes.find((episode) => episode.key === key && episode.status === 'open') ?? null;
 }
 
+/**
+ * Synthetic seed events establish a baseline for debt that existed before Boro began
+ * tracking it. They are not on-chain borrow transactions. If that exact loan identity
+ * has since been successfully re-read and is not currently open, a seed-only episode
+ * must not keep inflating the "open loan" count forever.
+ *
+ * Real lifecycle episodes (anything with a borrow/repay event) are never suppressed
+ * here; only seed-only baselines are eligible.
+ */
+export function reconcileSeedOnlyOpenEpisodes(
+  episodes: LoanEpisode[],
+  events: AuditEvent[],
+  liveEpisodeKeys: Iterable<string>,
+  verifiedEpisodeKeys: Iterable<string>,
+): LoanEpisode[] {
+  const live = new Set(Array.from(liveEpisodeKeys, (value) => value.toLowerCase()));
+  const verified = new Set(Array.from(verifiedEpisodeKeys, (value) => value.toLowerCase()));
+  const lifecycleByKey = new Map<string, { hasSeed: boolean; hasRealLifecycle: boolean }>();
+
+  for (const event of events) {
+    if (!event.episodeKey) continue;
+    const current = lifecycleByKey.get(event.episodeKey) ?? { hasSeed: false, hasRealLifecycle: false };
+    if (event.action === 'seed') current.hasSeed = true;
+    if (event.action === 'borrow' || event.action === 'repay') current.hasRealLifecycle = true;
+    lifecycleByKey.set(event.episodeKey, current);
+  }
+
+  return episodes.filter((episode) => {
+    if (episode.status !== 'open') return true;
+
+    const key = episode.key.toLowerCase();
+    if (live.has(key)) return true;
+
+    // Never infer closure from a missing/stale read. Suppress only after the same
+    // canonical loan identity has been successfully read in the current scan.
+    if (!verified.has(key)) return true;
+
+    const lifecycle = lifecycleByKey.get(episode.key);
+    return !(lifecycle?.hasSeed && !lifecycle.hasRealLifecycle);
+  });
+}
+
 export function mergeEvents(...lists: AuditEvent[][]): AuditEvent[] {
   const byHash = new Map<string, AuditEvent>();
   for (const list of lists) {

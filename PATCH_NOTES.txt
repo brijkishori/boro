@@ -1,0 +1,29 @@
+Boro phantom audit-loan fix
+
+Purpose
+- Stop a synthetic "Started tracking" seed from remaining counted as an open loan forever after the exact loan identity is successfully verified with no live debt.
+- Prevent new seed baselines from being created from stale/cached/failed position reads.
+- Preserve raw audit history; no stored events are deleted.
+
+Changed source files
+- lib/audit.ts
+- lib/audit.test.ts (new regression tests)
+- components/useAllPositions.ts
+- components/usePosition.ts
+- components/useAudit.ts
+- components/useLoanBook.ts
+- components/RepayFlow.tsx
+- components/AuditLog.tsx
+- package.json (adds lib/audit.test.ts to npm test)
+
+Expected result for the reported case
+- The real Morpho Blue Base cbBTC/USDC loan remains open.
+- A seed-only Morpho Blue Ethereum baseline that is currently verified as having no open position is not counted/displayed as an open loan episode.
+- Its raw historical seed row remains visible and is labeled as an ignored tracking baseline.
+
+Validation
+- Static TypeScript parse check found no diagnostics other than unresolved imports because node_modules was not included in the uploaded ZIP.
+- Run locally after copying these files:
+  npx tsx --test lib/audit.test.ts
+  npx tsc --noEmit
+  npm test

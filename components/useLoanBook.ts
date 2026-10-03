@@ -6,6 +6,7 @@ import { episodeForVenue, useAudit } from '@/components/useAudit';
 import { useAllPositions, type OpenPosition } from '@/components/useAllPositions';
 import { useRates } from '@/components/useRates';
 import { loanRateHistory } from '@/lib/finance/openingApr';
+import { episodeKey, reconcileSeedOnlyOpenEpisodes } from '@/lib/audit';
 import { buildActiveLoanView, type ActiveLoanView } from '@/lib/finance/loanView';
 import { activeDebtPositions, zeroDebtMarkets } from '@/lib/finance/portfolio';
 
@@ -14,14 +15,26 @@ export function useLoanBook() {
   const rates = useRates();
   const venues = rates.payload?.venues ?? [];
   const positions = useAllPositions(venues, address);
-  const audit = useAudit(address);
+  const rawAudit = useAudit(address);
   const borrowMarkets = positions.positions.filter((item) => item.venue.action === 'borrow' && (item.snapshot.debt > 0n || item.snapshot.collateral > 0n));
   const active = activeDebtPositions(borrowMarkets);
   const idle = zeroDebtMarkets(borrowMarkets);
+  const reconciledEpisodes = useMemo(() => {
+    if (!address) return rawAudit.episodes;
+    const verifiedIds = new Set(positions.verifiedVenueIds);
+    const liveKeys = borrowMarkets
+      .filter((item) => item.verified === true && item.snapshot.debt > 0n)
+      .map((item) => episodeKey(address, item.venue));
+    const verifiedKeys = venues
+      .filter((venue) => venue.action === 'borrow' && verifiedIds.has(venue.id))
+      .map((venue) => episodeKey(address, venue));
+    return reconcileSeedOnlyOpenEpisodes(rawAudit.episodes, rawAudit.events, liveKeys, verifiedKeys);
+  }, [address, borrowMarkets, positions.verifiedVenueIds, rawAudit.episodes, rawAudit.events, venues]);
+  const audit = { ...rawAudit, episodes: reconciledEpisodes };
   const views = useMemo(() => active.map((position) => {
-    const episode = episodeForVenue(audit.episodes, address, position.venue);
-    return loanView(position, audit.events, episode?.key ?? null, episode);
-  }), [active, address, audit.episodes, audit.events]);
+    const episode = episodeForVenue(reconciledEpisodes, address, position.venue);
+    return loanView(position, rawAudit.events, episode?.key ?? null, episode);
+  }), [active, address, rawAudit.events, reconciledEpisodes]);
   return { address, isConnected, ...rates, venues, positions, audit, borrowMarkets, active, idle, views };
 }
 

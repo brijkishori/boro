@@ -80,7 +80,7 @@ export default function RepayFlow({ quote, venues = [], onSelect, handoff = null
   const enabled = Boolean(address && safe);
   const gas = useGasCheck(quote?.chainId, GAS_UNITS.write);
   const marketChainId = quote?.chainId;
-  const { snapshot, refetch: refetchPosition } = usePosition(safe ? quote : null, address, enabled);
+  const { snapshot, refetch: refetchPosition, verified: positionVerified } = usePosition(safe ? quote : null, address, enabled);
   const freshLoanBalance = useFreshTokenBalance(quote?.loanAddress, quote?.chainId, address);
 
   const { data: usdcBalance, isError: usdcError, refetch: refetchUsdc } = useReadContract({
@@ -172,8 +172,8 @@ export default function RepayFlow({ quote, venues = [], onSelect, handoff = null
 
   useEffect(() => {
     if (!quote || snapshot.debt <= 0n) return;
-    seedOpen([{ venue: quote, snapshot }]);
-  }, [quote, seedOpen, snapshot]);
+    seedOpen([{ venue: quote, snapshot, verified: positionVerified }]);
+  }, [positionVerified, quote, seedOpen, snapshot]);
 
   if (!quote || !safe || !spender) {
     return <p className="text-sm text-muted-foreground">Choose the borrow market you want to repay.</p>;

@@ -38,6 +38,7 @@ export default function AuditLog({
 }) {
   const [actionFilter, setActionFilter] = useState('all');
   const [protocolFilter, setProtocolFilter] = useState('all');
+  const episodeKeys = useMemo(() => new Set(episodes.map((episode) => episode.key)), [episodes]);
   const totals = useMemo(() => {
     const open = episodes.filter((episode) => episode.status === 'open');
     const closed = episodes.filter((episode) => episode.status === 'closed');
@@ -143,7 +144,12 @@ export default function AuditLog({
                     {new Date(event.at).toLocaleString()}
                   </a>
                 ) : (
-                  <p className="text-muted-foreground">{new Date(event.at).toLocaleString()} · started tracking</p>
+                  <p className="text-muted-foreground">
+                    {new Date(event.at).toLocaleString()}
+                    {event.action === 'seed' && event.episodeKey && !episodeKeys.has(event.episodeKey)
+                      ? ' · tracking baseline ignored (no verified open loan)'
+                      : ' · started tracking'}
+                  </p>
                 )}
                 {event.action === 'repay' && event.interestPaid && event.principalPaid && (
                   <p className="text-muted-foreground">

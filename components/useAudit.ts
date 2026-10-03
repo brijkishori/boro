@@ -72,10 +72,10 @@ export function useAudit(wallet: Address | undefined) {
     if (!address || !ready) return;
     const incoming: AuditEvent[] = [];
     const seen = new Set<string>();
-    for (const { venue, snapshot } of positions) {
-      if (venue.action !== 'borrow' || snapshot.debt <= 0n) continue;
+    for (const { venue, snapshot, verified } of positions) {
+      if (venue.action !== 'borrow' || snapshot.debt <= 0n || !snapshot.ready || verified !== true) continue;
       const key = episodeKey(address, venue);
-      if (seen.has(key) || episodes.some((item) => item.key === key)) {
+      if (seen.has(key) || findOpenEpisode(episodes, key)) {
         seen.add(key);
         continue;
       }
