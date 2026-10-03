@@ -10,7 +10,7 @@ import { StatusBadge } from '@/components/RiskStatus';
 import { riskSeverityStatus } from '@/lib/finance/riskStatus';
 import { chainLabel, isChainId, type Venue, type ChainId } from '@/lib/protocol';
 import { buildPlannerCards, stageRemedyHandoff } from '@/lib/finance/actionPlanner';
-import { buildPhase6D1RepayHandoff, phase6D1RepayEligibility } from '@/lib/finance/assistedRepay';
+import { buildPhase6D1ManualRepayPlan, buildPhase6D1RepayHandoff, phase6D1ManualRepayValidation, phase6D1RepayEligibility } from '@/lib/finance/assistedRepay';
 import { publicClient } from '@/lib/rpc';
 import { fetchFreshConfirmReads } from '@/lib/finance/fetchConfirm';
 import { formatUnits, type Address } from 'viem';
@@ -38,6 +38,7 @@ export default function EmergencyConsole({
   const [explorePreview, setExplorePreview] = useState(initialExplorePreview);
   const [selectedScenario, setSelectedScenario] = useState<'WATCH' | 'PREPARE' | 'ACT' | 'URGENT' | null>(initialScenario);
   const [targetChoice, setTargetChoice] = useState<number>(report.thresholds.preferredHealthFactor || 2.5);
+  const [manualRepayInput, setManualRepayInput] = useState('5');
 
   const state = report.decision.currentState;
   const isNormal = state === 'NORMAL';
@@ -147,6 +148,29 @@ export default function EmergencyConsole({
 
   const currentChain: ChainId = isChainId(networkContext.chainId) ? networkContext.chainId : 8453;
   const currentChainName = chainLabel(currentChain);
+  const manualRepayAmount = Number(manualRepayInput);
+  const manualRepayVisible = Boolean(
+    !isHypothetical &&
+    venue &&
+    venue.protocol === 'morpho' &&
+    venue.chainId === 8453 &&
+    input.protocol === 'morpho' &&
+    input.chainId === 8453 &&
+    input.totalDebt > 0,
+  );
+  const manualRepayValidation = manualRepayVisible
+    ? phase6D1ManualRepayValidation({ riskInput: input, repayAmount: manualRepayAmount, venue })
+    : null;
+  const manualRepayPlan = useMemo(() => {
+    if (!manualRepayVisible || !venue || manualRepayValidation) return null;
+    return buildPhase6D1ManualRepayPlan({
+      riskInput: input,
+      walletResources,
+      networkContext,
+      venue,
+      repayAmount: manualRepayAmount,
+    });
+  }, [input, manualRepayAmount, manualRepayValidation, manualRepayVisible, networkContext, venue, walletResources]);
 
   return (
     <div className="space-y-4">
@@ -335,6 +359,45 @@ export default function EmergencyConsole({
         <button type="button" className="rounded border px-2 py-1" onClick={() => setExplorePreview(true)}>
           Preview emergency options
         </button>
+      )}
+
+      {manualRepayVisible && (
+        <div className="rounded border p-3 space-y-3">
+          <div className="space-y-1">
+            <p className="font-semibold">MANUAL ASSISTED PARTIAL REPAYMENT — LIVE POSITION</p>
+            <p className="text-xs text-muted-foreground">
+              Phase 6D.1 lets you test or make a deliberate Morpho Base partial repayment without waiting for an emergency trigger. Nothing is sent until the prepared review passes and you explicitly confirm in your wallet.
+            </p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+            <label className="block text-sm">
+              Repay amount ({input.debtAsset})
+              <input
+                className="mt-1 h-9 w-full rounded border bg-background px-2"
+                inputMode="decimal"
+                value={manualRepayInput}
+                onChange={(event) => setManualRepayInput(event.target.value)}
+                aria-label={`Manual partial repayment amount in ${input.debtAsset}`}
+              />
+            </label>
+            <div className="flex gap-2">
+              {[5, 10, 25].map((amount) => (
+                <button key={amount} type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setManualRepayInput(String(amount))}>
+                  ${amount}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="text-xs text-muted-foreground">
+            <p>Current debt: {formatUsdExact(input.totalDebt)} {input.debtAsset}</p>
+            <p>Available on {currentChainName}: {formatUsdExact(walletResources.debtAssetAvailable ?? 0)} {input.debtAsset}</p>
+          </div>
+          {manualRepayValidation ? (
+            <p className="text-xs text-red-500">{manualRepayValidation}</p>
+          ) : manualRepayPlan ? (
+            <EmergencyPlanCard plan={manualRepayPlan} input={input} chainName={currentChainName} venue={venue} />
+          ) : null}
+        </div>
       )}
 
       <div className="border-t pt-2 space-y-1">

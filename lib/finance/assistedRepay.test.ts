@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Venue } from '@/lib/protocol';
 import type { ExecutionPlan, PreparedExecution } from './executionPlanner';
-import { buildPhase6D1RepayHandoff, phase6D1RepayEligibility } from './assistedRepay';
+import { buildPhase6D1ManualRepayPlan, buildPhase6D1RepayHandoff, phase6D1ManualRepayValidation, phase6D1RepayEligibility } from './assistedRepay';
 
 const venue = {
   id: 'morpho-base-cbbtc-usdc',
@@ -120,4 +120,76 @@ test('6D.1 E: handoff carries exact partial repay into existing RepayFlow path',
   assert.equal(handoff.hypothetical, false);
   assert.equal(handoff.freshness.position, 'fresh');
   assert.match(handoff.notice ?? '', /revalidate/i);
+});
+
+
+test('6D.1 F: manual $5 live Morpho Base repay builds a guarded partial-repay plan', () => {
+  const now = Date.now();
+  const riskInput = {
+    wallet,
+    protocol: 'morpho',
+    chainId: 8453,
+    marketId: venue.id,
+    collateralAsset: 'cbBTC',
+    debtAsset: 'USDC',
+    collateralAmount: 1,
+    totalDebt: 20_000,
+    healthFactor: 3.5,
+    liquidationThreshold: 0.86,
+    oraclePrice: 83_000,
+    fetchedAt: now,
+    positionFetchedAt: now,
+    oracleFetchedAt: now,
+    walletFetchedAt: now,
+    positionReadFailed: false,
+    sourceBlock: 123n,
+  };
+  const walletResources = { debtAssetAvailable: 100, collateralAvailable: 0, nativeGasAvailable: 0.01, gasRequired: 0.0001, debtAssetAllowance: null, collateralAllowance: null };
+  const result = buildPhase6D1ManualRepayPlan({
+    riskInput,
+    walletResources,
+    networkContext: { chainId: 8453, marketId: venue.id },
+    venue,
+    repayAmount: 5,
+  });
+  assert.equal(result.mode, 'EMERGENCY_REPAY');
+  assert.equal(result.requiredAssets.debtAssetRequired, 5);
+  assert.equal(result.targetState.projectedDebt, 19_995);
+  assert.equal(result.hypothetical, false);
+  assert.equal(result.blockingIssues.length, 0);
+});
+
+test('6D.1 G: manual full repay remains blocked before review', () => {
+  const reason = phase6D1ManualRepayValidation({
+    riskInput: {
+      wallet,
+      protocol: 'morpho',
+      chainId: 8453,
+      marketId: venue.id,
+      collateralAsset: 'cbBTC',
+      debtAsset: 'USDC',
+      collateralAmount: 1,
+      totalDebt: 20_000,
+      liquidationThreshold: 0.86,
+    },
+    venue,
+    repayAmount: 20_000,
+  });
+  assert.match(reason ?? '', /Full repayment/);
+});
+
+test('6D.1 H: manual entry remains Morpho Base only', () => {
+  const riskInput = {
+    wallet,
+    protocol: 'morpho',
+    chainId: 8453,
+    marketId: venue.id,
+    collateralAsset: 'cbBTC',
+    debtAsset: 'USDC',
+    collateralAmount: 1,
+    totalDebt: 20_000,
+    liquidationThreshold: 0.86,
+  };
+  assert.match(phase6D1ManualRepayValidation({ riskInput, venue: { ...venue, chainId: 1 } as Venue, repayAmount: 5 }) ?? '', /Base/);
+  assert.match(phase6D1ManualRepayValidation({ riskInput: { ...riskInput, protocol: 'aave' }, venue: { ...venue, protocol: 'aave', morpho: undefined } as Venue, repayAmount: 5 }) ?? '', /Morpho/);
 });

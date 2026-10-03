@@ -161,6 +161,42 @@ function row(category: DriftCategory, field: string, from: string, to: string, a
   return { category, field, from, to, alwaysRereview };
 }
 
+/**
+ * Interest-bearing debt grows continuously even when the user has not changed the
+ * position. Requiring byte-for-byte debt equality makes confirm-time validation
+ * impossible on protocols such as Morpho because the debt can advance every block.
+ *
+ * For REPAY only, allow a very small monotonic increase that is consistent with
+ * passive interest accrual. Any debt decrease, collateral change, or materially
+ * larger debt increase still forces a new review.
+ */
+function expectedRepayDebtAccrual(reviewed: ConfirmSnapshot, fresh: ConfirmSnapshot): boolean {
+  if (reviewed.action !== 'REPAY' || fresh.action !== 'REPAY') return false;
+
+  const before = BigInt(reviewed.currentDebt);
+  const after = BigInt(fresh.currentDebt);
+  if (after < before) return false;
+  if (after === before) return true;
+  if (before <= 0n) return false;
+
+  const elapsedMs = Math.max(0, fresh.fetchedAt - reviewed.fetchedAt);
+  const apr = Math.max(reviewed.borrowApr, fresh.borrowApr, 0);
+  if (!Number.isFinite(apr)) return false;
+
+  // Add one minute of timing/block slack because the reviewed debt and the rate
+  // snapshot are not necessarily sampled in the same RPC round. The multiplier
+  // absorbs normal index/share rounding. The fixed floor is 0.005 USDC (6 decimals).
+  // This is intentionally tiny: a real borrow or other material position change
+  // remains far outside the allowance and still forces re-review.
+  const accrualWindowMs = BigInt(Math.ceil(elapsedMs + 60_000));
+  const aprScale = 1_000_000_000n;
+  const aprScaled = BigInt(Math.ceil(apr * Number(aprScale)));
+  const yearMs = 365n * 24n * 60n * 60n * 1000n;
+  const expectedUnits = (before * aprScaled * accrualWindowMs) / (aprScale * yearMs);
+  const allowanceUnits = expectedUnits * 2n > 5_000n ? expectedUnits * 2n : 5_000n;
+  return after - before <= allowanceUnits;
+}
+
 export function compareConfirmSnapshots(reviewed: ConfirmSnapshot, fresh: ConfirmSnapshot): DriftChange[] {
   const changes: DriftChange[] = [];
   if (
@@ -177,7 +213,10 @@ export function compareConfirmSnapshots(reviewed: ConfirmSnapshot, fresh: Confir
     const to = String(fresh.lltv ?? fresh.liquidationThreshold ?? '—');
     changes.push(row('MARKET_CONFIGURATION_DRIFT', 'Liquidation parameter', from, to, true));
   }
-  if (reviewed.currentCollateral !== fresh.currentCollateral || reviewed.currentDebt !== fresh.currentDebt) {
+  const collateralChanged = reviewed.currentCollateral !== fresh.currentCollateral;
+  const debtChanged = reviewed.currentDebt !== fresh.currentDebt;
+  const benignRepayAccrual = debtChanged && expectedRepayDebtAccrual(reviewed, fresh);
+  if (collateralChanged || (debtChanged && !benignRepayAccrual)) {
     changes.push(row(
       'POSITION_DRIFT',
       'On-chain position',

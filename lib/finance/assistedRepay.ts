@@ -1,5 +1,5 @@
-import type { ExecutionPlan, PreparedExecution } from '@/lib/finance/executionPlanner';
-import { projectPosition } from '@/lib/finance/riskMonitor';
+import { buildEmergencyExecutionPlan, type ExecutionPlan, type PreparedExecution, type WalletResources } from '@/lib/finance/executionPlanner';
+import { projectPosition, type ProposedRemedy, type RiskMonitorInput } from '@/lib/finance/riskMonitor';
 import type { RemedyHandoff } from '@/lib/finance/actionPlanner';
 import { protocolMarketId, type Venue } from '@/lib/protocol';
 
@@ -8,6 +8,72 @@ export type Phase6D1Eligibility = {
   reason: string | null;
   repayAmount: number | null;
 };
+
+
+export function phase6D1ManualRepayValidation(input: {
+  riskInput: RiskMonitorInput;
+  repayAmount: number;
+  venue?: Venue;
+}): string | null {
+  const { riskInput, repayAmount, venue } = input;
+  if (!venue) return 'Verified market definition is required.';
+  if (venue.protocol !== 'morpho' || !venue.morpho || riskInput.protocol !== 'morpho') return 'Phase 6D.1 supports Morpho partial repay only.';
+  if (venue.chainId !== 8453 || riskInput.chainId !== 8453) return 'Phase 6D.1 is limited to Morpho on Base.';
+  if (!riskInput.wallet) return 'Wallet is not connected.';
+  if (!Number.isFinite(repayAmount) || repayAmount <= 0) return 'Enter a repayment amount greater than $0.';
+  if (!(riskInput.totalDebt > 0)) return 'No live debt is available to repay.';
+  if (repayAmount >= riskInput.totalDebt - 1e-8) return 'Full repayment remains disabled in Phase 6D.1.';
+  return null;
+}
+
+export function buildPhase6D1ManualRepayPlan(input: {
+  riskInput: RiskMonitorInput;
+  walletResources: WalletResources;
+  networkContext: { chainId: number; marketId: string; gasPriceWei?: bigint };
+  venue?: Venue;
+  repayAmount: number;
+}): ExecutionPlan {
+  const validation = phase6D1ManualRepayValidation({
+    riskInput: input.riskInput,
+    repayAmount: input.repayAmount,
+    venue: input.venue,
+  });
+
+  const projectedDebt = Math.max(0, input.riskInput.totalDebt - Math.max(0, input.repayAmount));
+  const projected = projectPosition(
+    input.riskInput.collateralAmount,
+    projectedDebt,
+    input.riskInput.oraclePrice ?? 0,
+    input.riskInput.liquidationThreshold,
+  );
+  const remedy: ProposedRemedy = {
+    type: 'REPAY',
+    targetHF: projected.healthFactor ?? input.riskInput.healthFactor ?? 0,
+    repayAmount: Math.max(0, input.repayAmount),
+    collateralAmount: 0,
+    projectedPosition: projected,
+    calculatedAt: new Date().toISOString(),
+    sourceBlock: input.riskInput.sourceBlock,
+    feasibility: 'AVAILABLE',
+    label: 'Manual assisted partial repayment',
+  };
+
+  const plan = buildEmergencyExecutionPlan(
+    remedy,
+    input.riskInput,
+    input.walletResources,
+    input.networkContext,
+    { hypothetical: false },
+  );
+
+  if (!validation) return plan;
+  return {
+    ...plan,
+    readiness: 'BLOCKED',
+    blockingIssues: Array.from(new Set([validation, ...plan.blockingIssues])),
+    executable: false,
+  };
+}
 
 export function phase6D1RepayEligibility(input: {
   plan: ExecutionPlan;

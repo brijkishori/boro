@@ -232,3 +232,67 @@ test('confirm drift tolerances live in one config object', () => {
   assert.equal(CONFIRM_DRIFT.LIQUIDITY_REL, 0.02);
   assert.equal(CONFIRM_DRIFT.MAX_AGE_MS, 45_000);
 });
+
+test('I: REPAY confirm allows tiny monotonic debt growth caused by passive interest accrual', () => {
+  const now = Date.now();
+  const reviewedVenue = venue({ borrowApr: 0.0481, freshness: { source: 'test', fetchedAt: now - 20_000 } });
+  const freshVenue = venue({ borrowApr: 0.0481, freshness: { source: 'test', fetchedAt: now } });
+  const reviewedDebt = 20_404_445_000n;
+  const freshDebt = reviewedDebt + 2_000n; // $0.002 of passive accrual
+  const reviewed = snap(reviewedVenue, changeInput(reviewedVenue, {
+    action: 'REPAY',
+    amount: 5_000_000n,
+    currentCollateral: 100_000_000n,
+    currentDebt: reviewedDebt,
+    spendableBalance: 209_000_000n,
+  }));
+  const fresh = snap(freshVenue, changeInput(freshVenue, {
+    action: 'REPAY',
+    amount: 5_000_000n,
+    currentCollateral: 100_000_000n,
+    currentDebt: freshDebt,
+    spendableBalance: 209_000_000n,
+  }));
+  const decision = decideConfirmation(reviewed, fresh, { now });
+  assert.equal(decision.status, 'proceed');
+  assert.equal(decision.invokeWallet, true);
+});
+
+test('J: REPAY confirm still blocks a material debt increase', () => {
+  const now = Date.now();
+  const reviewedVenue = venue({ borrowApr: 0.0481, freshness: { source: 'test', fetchedAt: now - 20_000 } });
+  const freshVenue = venue({ borrowApr: 0.0481, freshness: { source: 'test', fetchedAt: now } });
+  const reviewedDebt = 20_404_445_000n;
+  const freshDebt = reviewedDebt + 1_000_000n; // $1 is not normal block-to-block accrual
+  const reviewed = snap(reviewedVenue, changeInput(reviewedVenue, {
+    action: 'REPAY', amount: 5_000_000n, currentCollateral: 100_000_000n,
+    currentDebt: reviewedDebt, spendableBalance: 209_000_000n,
+  }));
+  const fresh = snap(freshVenue, changeInput(freshVenue, {
+    action: 'REPAY', amount: 5_000_000n, currentCollateral: 100_000_000n,
+    currentDebt: freshDebt, spendableBalance: 209_000_000n,
+  }));
+  const decision = decideConfirmation(reviewed, fresh, { now });
+  assert.equal(decision.status, 'rereview');
+  if (decision.status === 'rereview') {
+    assert.ok(decision.changes.some((change) => change.category === 'POSITION_DRIFT'));
+  }
+});
+
+test('K: REPAY confirm still blocks a debt decrease because another repayment may have happened', () => {
+  const now = Date.now();
+  const reviewedVenue = venue({ freshness: { source: 'test', fetchedAt: now - 20_000 } });
+  const freshVenue = venue({ freshness: { source: 'test', fetchedAt: now } });
+  const reviewedDebt = 20_404_445_000n;
+  const freshDebt = reviewedDebt - 1_000_000n;
+  const reviewed = snap(reviewedVenue, changeInput(reviewedVenue, {
+    action: 'REPAY', amount: 5_000_000n, currentCollateral: 100_000_000n,
+    currentDebt: reviewedDebt, spendableBalance: 209_000_000n,
+  }));
+  const fresh = snap(freshVenue, changeInput(freshVenue, {
+    action: 'REPAY', amount: 5_000_000n, currentCollateral: 100_000_000n,
+    currentDebt: freshDebt, spendableBalance: 209_000_000n,
+  }));
+  const decision = decideConfirmation(reviewed, fresh, { now });
+  assert.equal(decision.status, 'rereview');
+});
