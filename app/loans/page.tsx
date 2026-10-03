@@ -12,7 +12,7 @@ import AuditLog from '@/components/AuditLog';
 import { LoanRateStatus } from '@/components/LoanRateStatus';
 import { MetricHint } from '@/components/MetricHint';
 import { formatApr, formatToken, formatUsd, formatUsdExact } from '@/lib/amount';
-import { formatAccountingAmount, formatTokenAmount } from '@/lib/finance/format';
+import { formatAccountingAmount } from '@/lib/finance/format';
 import { formatCushion, formatHealthFactor, formatLtv } from '@/lib/finance/format';
 import { asBig, formatDuration, loanLifecycle } from '@/lib/audit';
 import { formatEth, formatFeeUsd, weiToUsd } from '@/components/useNetworkFee';
@@ -121,6 +121,15 @@ function named(views: ActiveLoanView[], pick: (view: ActiveLoanView) => number |
   return chosen ? `${protocolLabel(chosen.protocol)} · ${chainLabel(chosen.chainId)}` : '';
 }
 
+function formatCollateralToken(view: ActiveLoanView): string {
+  const maximumFractionDigits = Math.min(Math.max(view.assetDecimals, 0), 8);
+  const amount = view.collateralAmount.toLocaleString('en-US', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
+  });
+  return `${amount} ${view.assetSymbol}`;
+}
+
 function PortfolioSummary({
   labels,
   summary,
@@ -137,7 +146,7 @@ function PortfolioSummary({
   const liquidationName = sole ? '' : named(views, (view) => view.liquidationPriceUsd > 0 ? view.liquidationPriceUsd : null, 'max');
   const cushionName = sole ? '' : named(views, (view) => view.liquidationCushion, 'min');
   const rows = [
-    { label: labels.collateral, value: formatUsdExact(sole ? sole.collateralUsd : summary.totalCollateralUsd) },
+    { label: labels.collateral, value: sole ? `${formatCollateralToken(sole)} · ${formatUsdExact(sole.collateralUsd)}` : formatUsdExact(summary.totalCollateralUsd) },
     { label: labels.debt, value: formatUsdExact(sole ? sole.totalDebtUsd : summary.totalDebtUsd) },
     { label: labels.health, value: sole ? (sole.healthFactor === null ? '—' : formatHealthFactor(sole.healthFactor)) : (summary.worstHealthFactor === null ? '—' : formatHealthFactor(summary.worstHealthFactor)), hint: METRIC_HINTS.healthFactor, note: healthName },
     { label: labels.ltv, value: sole ? formatLtv(sole.ltv) : (summary.highestLtv === null ? '—' : formatLtv(summary.highestLtv)), hint: METRIC_HINTS.ltv, note: ltvName },
@@ -199,7 +208,7 @@ function ActiveLoanCard({
         <div className="grid grid-cols-2 gap-3 text-xs">
           <div>
             <p className="text-muted-foreground">Collateral</p>
-            <p className="font-semibold">{formatTokenAmount(position.snapshot.collateral, view.assetDecimals, { displayDecimals: view.assetDecimals >= 8 ? 4 : 2, symbol: view.assetSymbol, trim: false })}</p>
+            <p className="font-semibold">{formatCollateralToken(view)}</p>
             <p className="text-muted-foreground">{formatUsdExact(view.collateralUsd)}</p>
           </div>
           <div>

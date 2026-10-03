@@ -11,6 +11,7 @@ import { riskSeverityStatus } from '@/lib/finance/riskStatus';
 import { chainLabel, isChainId, type Venue, type ChainId } from '@/lib/protocol';
 import { buildPlannerCards, stageRemedyHandoff } from '@/lib/finance/actionPlanner';
 import { buildPhase6D1ManualRepayPlan, buildPhase6D1RepayHandoff, phase6D1ManualRepayValidation, phase6D1RepayEligibility } from '@/lib/finance/assistedRepay';
+import { buildPhase6D2CollateralHandoff, buildPhase6D2ManualCollateralPlan, phase6D2CollateralEligibility, phase6D2ManualCollateralValidation } from '@/lib/finance/assistedCollateral';
 import { publicClient } from '@/lib/rpc';
 import { fetchFreshConfirmReads } from '@/lib/finance/fetchConfirm';
 import { formatUnits, type Address } from 'viem';
@@ -39,6 +40,7 @@ export default function EmergencyConsole({
   const [selectedScenario, setSelectedScenario] = useState<'WATCH' | 'PREPARE' | 'ACT' | 'URGENT' | null>(initialScenario);
   const [targetChoice, setTargetChoice] = useState<number>(report.thresholds.preferredHealthFactor || 2.5);
   const [manualRepayInput, setManualRepayInput] = useState('5');
+  const [manualCollateralInput, setManualCollateralInput] = useState('0.00001');
 
   const state = report.decision.currentState;
   const isNormal = state === 'NORMAL';
@@ -171,6 +173,32 @@ export default function EmergencyConsole({
       repayAmount: manualRepayAmount,
     });
   }, [input, manualRepayAmount, manualRepayValidation, manualRepayVisible, networkContext, venue, walletResources]);
+
+  const manualCollateralAmount = Number(manualCollateralInput);
+  const manualCollateralVisible = Boolean(
+    !isHypothetical &&
+    venue &&
+    venue.protocol === 'morpho' &&
+    venue.chainId === 8453 &&
+    venue.assetSymbol.toLowerCase() === 'cbbtc' &&
+    input.protocol === 'morpho' &&
+    input.chainId === 8453 &&
+    input.collateralAsset.toLowerCase() === 'cbbtc' &&
+    input.totalDebt > 0,
+  );
+  const manualCollateralValidation = manualCollateralVisible
+    ? phase6D2ManualCollateralValidation({ riskInput: input, collateralAmount: manualCollateralAmount, venue })
+    : null;
+  const manualCollateralPlan = useMemo(() => {
+    if (!manualCollateralVisible || !venue || manualCollateralValidation) return null;
+    return buildPhase6D2ManualCollateralPlan({
+      riskInput: input,
+      walletResources,
+      networkContext,
+      venue,
+      collateralAmount: manualCollateralAmount,
+    });
+  }, [input, manualCollateralAmount, manualCollateralValidation, manualCollateralVisible, networkContext, venue, walletResources]);
 
   return (
     <div className="space-y-4">
@@ -400,10 +428,53 @@ export default function EmergencyConsole({
         </div>
       )}
 
+
+      {manualCollateralVisible && (
+        <div className="rounded border p-3 space-y-3">
+          <div className="space-y-1">
+            <p className="font-semibold">MANUAL ASSISTED COLLATERAL ADDITION — LIVE POSITION</p>
+            <p className="text-xs text-muted-foreground">
+              Phase 6D.2 adds cbBTC to the live Morpho Base loan through the same guarded review path. Nothing is sent until fresh reads, allowance checks, and simulation/approval checks pass, followed by explicit wallet confirmation.
+            </p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+            <label className="block text-sm">
+              Add collateral ({input.collateralAsset})
+              <input
+                className="mt-1 h-9 w-full rounded border bg-background px-2"
+                inputMode="decimal"
+                value={manualCollateralInput}
+                onChange={(event) => setManualCollateralInput(event.target.value)}
+                aria-label={`Manual collateral addition amount in ${input.collateralAsset}`}
+              />
+            </label>
+            <div className="flex gap-2">
+              {[0.00001, 0.00005, 0.0001].map((amount) => (
+                <button key={amount} type="button" className="rounded border px-2 py-1 text-xs leading-tight" onClick={() => setManualCollateralInput(String(amount))}>
+                  <span className="block">{amount}</span>
+                  <span className="block text-[10px] text-muted-foreground">≈ {collateralUsdText(amount, input.oraclePrice)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="text-xs text-muted-foreground space-y-0.5">
+            <p>Entered amount: {tokenText(Number(manualCollateralInput) || 0)} {input.collateralAsset} · ≈ {collateralUsdText(Number(manualCollateralInput) || 0, input.oraclePrice)}</p>
+            <p>Current collateral: {tokenText(input.collateralAmount)} {input.collateralAsset} · ≈ {collateralUsdText(input.collateralAmount, input.oraclePrice)}</p>
+            <p>Available on {currentChainName}: {tokenText(walletResources.collateralAvailable ?? 0)} {input.collateralAsset} · ≈ {collateralUsdText(walletResources.collateralAvailable ?? 0, input.oraclePrice)}</p>
+            <p>BTC reference price: {moneyOrDash(input.oraclePrice)} <span className="text-[10px]">(USD equivalents update with live oracle data)</span></p>
+          </div>
+          {manualCollateralValidation ? (
+            <p className="text-xs text-red-500">{manualCollateralValidation}</p>
+          ) : manualCollateralPlan ? (
+            <EmergencyPlanCard plan={manualCollateralPlan} input={input} chainName={currentChainName} venue={venue} />
+          ) : null}
+        </div>
+      )}
+
       <div className="border-t pt-2 space-y-1">
         <p className="font-semibold">AVAILABLE NOW — {currentChainName.toUpperCase()}</p>
         <p>{input.debtAsset} {moneyOrDash(input.walletDebtAssetBalance ?? null)}</p>
-        <p>{input.collateralAsset} {tokenText(input.walletCollateralBalance ?? 0)}</p>
+        <p>{input.collateralAsset} {tokenText(input.walletCollateralBalance ?? 0)} · ≈ {collateralUsdText(input.walletCollateralBalance ?? 0, input.oraclePrice)}</p>
         <p>ETH gas {input.nativeGasBalance !== null && input.nativeGasBalance !== undefined ? input.nativeGasBalance.toFixed(4) : '—'}</p>
         {(input.elsewhereDebtAsset || input.elsewhereCollateral) && (
           <div className="mt-1 pt-1 border-t">
@@ -433,8 +504,11 @@ function EmergencyPlanCard({ plan, input, chainName, venue }: { plan: ExecutionP
   const debtReq = plan.requiredAssets.debtAssetRequired;
   const collReq = plan.requiredAssets.collateralRequired;
   const isMixed = debtReq > 0 && collReq > 0;
-  const eligibility = prepared && venue
+  const repayEligibility = prepared && venue && plan.mode === 'EMERGENCY_REPAY'
     ? phase6D1RepayEligibility({ plan, prepared, venue, wallet: input.wallet })
+    : undefined;
+  const collateralEligibility = prepared && venue && plan.mode === 'EMERGENCY_COLLATERAL'
+    ? phase6D2CollateralEligibility({ plan, prepared, venue, wallet: input.wallet })
     : undefined;
   
   async function handlePrepare() {
@@ -538,6 +612,16 @@ function EmergencyPlanCard({ plan, input, chainName, venue }: { plan: ExecutionP
     window.location.assign(`/?tab=repay&market=${encodeURIComponent(venue.id)}`);
   }
 
+
+  function continueToCollateral() {
+    if (!prepared || !venue) return;
+    const decision = phase6D2CollateralEligibility({ plan, prepared, venue, wallet: input.wallet });
+    if (!decision.eligible) return;
+    const handoff = buildPhase6D2CollateralHandoff({ plan, prepared, venue, wallet: input.wallet });
+    stageRemedyHandoff(window.sessionStorage, handoff);
+    window.location.assign(`/?tab=borrow&market=${encodeURIComponent(venue.id)}`);
+  }
+
   if (prepared) {
     return (
       <PreparedReviewUI
@@ -545,8 +629,10 @@ function EmergencyPlanCard({ plan, input, chainName, venue }: { plan: ExecutionP
         onCancel={() => setPrepared(null)}
         input={input}
         chainName={chainName}
-        phase6D1Eligibility={eligibility}
-        onContinueToRepay={eligibility?.eligible ? continueToRepay : undefined}
+        phase6D1Eligibility={repayEligibility}
+        onContinueToRepay={repayEligibility?.eligible ? continueToRepay : undefined}
+        phase6D2Eligibility={collateralEligibility}
+        onContinueToCollateral={collateralEligibility?.eligible ? continueToCollateral : undefined}
       />
     );
   }
@@ -563,12 +649,12 @@ function EmergencyPlanCard({ plan, input, chainName, venue }: { plan: ExecutionP
         <div className="space-y-1">
           <p>This option uses both available assets to reach the selected safety target.</p>
           <p>Repay: {formatUsdExact(debtReq)} {input.debtAsset}</p>
-          <p>Add: {tokenText(collReq)} {input.collateralAsset}</p>
+          <p>Add: {tokenText(collReq)} {input.collateralAsset} · ≈ {collateralUsdText(collReq, input.oraclePrice)}</p>
         </div>
       ) : (
         <div className="space-y-1">
           {debtReq > 0 && <p>Required: {formatUsdExact(debtReq)} {input.debtAsset}</p>}
-          {collReq > 0 && <p>Required: {tokenText(collReq)} {input.collateralAsset}</p>}
+          {collReq > 0 && <p>Required: {tokenText(collReq)} {input.collateralAsset} · ≈ {collateralUsdText(collReq, input.oraclePrice)}</p>}
         </div>
       )}
 
@@ -602,11 +688,11 @@ function EmergencyPlanCard({ plan, input, chainName, venue }: { plan: ExecutionP
           )}
           {collReq > 0 && (
             <div className="flex gap-2">
-              <span>{input.collateralAsset} required: {tokenText(collReq)}</span>
-              <span>Available: {tokenText(plan.walletResources.collateralAvailable ?? 0)}</span>
+              <span>{input.collateralAsset} required: {tokenText(collReq)} (≈ {collateralUsdText(collReq, input.oraclePrice)})</span>
+              <span>Available: {tokenText(plan.walletResources.collateralAvailable ?? 0)} (≈ {collateralUsdText(plan.walletResources.collateralAvailable ?? 0, input.oraclePrice)})</span>
               <span>Status: {plan.walletResources.collateralAvailable && plan.walletResources.collateralAvailable >= collReq ? '✓ AVAILABLE' : '✕ INSUFFICIENT'}</span>
               {plan.walletResources.collateralAvailable !== null && plan.walletResources.collateralAvailable < collReq && (
-                <span className="text-orange-500">Shortfall: {tokenText(collReq - plan.walletResources.collateralAvailable)}</span>
+                <span className="text-orange-500">Shortfall: {tokenText(collReq - plan.walletResources.collateralAvailable)} (≈ {collateralUsdText(collReq - plan.walletResources.collateralAvailable, input.oraclePrice)})</span>
               )}
             </div>
           )}
@@ -690,14 +776,22 @@ function tokenText(value: number) {
   return value.toLocaleString('en-US', { maximumFractionDigits: 8 });
 }
 
+function collateralUsdText(amount: number, oraclePrice: number | null | undefined) {
+  if (!Number.isFinite(amount) || amount < 0 || oraclePrice === null || oraclePrice === undefined || !Number.isFinite(oraclePrice) || oraclePrice <= 0) return '—';
+  return formatUsdExact(amount * oraclePrice);
+}
+
 function isFresh(timestamp: number | null): boolean {
   if (!timestamp) return false;
   return Date.now() - timestamp < 5 * 60_000;
 }
 
-export function PreparedReviewUI({ prepared, onCancel, input, chainName, phase6D1Eligibility, onContinueToRepay }: { prepared: PreparedExecution; onCancel: () => void; input: RiskMonitorInput; chainName: string; phase6D1Eligibility?: { eligible: boolean; reason: string | null }; onContinueToRepay?: () => void }) {
+export function PreparedReviewUI({ prepared, onCancel, input, chainName, phase6D1Eligibility, onContinueToRepay, phase6D2Eligibility, onContinueToCollateral }: { prepared: PreparedExecution; onCancel: () => void; input: RiskMonitorInput; chainName: string; phase6D1Eligibility?: { eligible: boolean; reason: string | null }; onContinueToRepay?: () => void; phase6D2Eligibility?: { eligible: boolean; reason: string | null }; onContinueToCollateral?: () => void }) {
   const isReady = prepared.readiness === 'READY' && prepared.executable !== false;
-  const actionTitle = prepared.transactions.map(t => `${t.action} ${t.amount} ${t.asset}`).join(' & ');
+  const actionTitle = prepared.transactions.map((t) => {
+    const usdEquivalent = t.asset === input.collateralAsset ? ` (≈ ${collateralUsdText(t.amount, prepared.freshBeforeState.oraclePrice)})` : '';
+    return `${t.action} ${t.amount} ${t.asset}${usdEquivalent}`;
+  }).join(' & ');
 
   return (
     <div className="rounded border p-3 space-y-3 bg-slate-50 dark:bg-slate-900">
@@ -723,14 +817,14 @@ export function PreparedReviewUI({ prepared, onCancel, input, chainName, phase6D
             {prepared.hypothetical ? 'STARTING (HYPOTHETICAL)' : 'CURRENT'}
           </p>
           <p>Debt: {formatUsd(prepared.freshBeforeState.debt)}</p>
-          <p>Collateral: {tokenText(prepared.freshBeforeState.collateralAmount)} {input.collateralAsset}</p>
+          <p>Collateral: {tokenText(prepared.freshBeforeState.collateralAmount)} {input.collateralAsset} · ≈ {collateralUsdText(prepared.freshBeforeState.collateralAmount, prepared.freshBeforeState.oraclePrice)}</p>
           <p>HF: {hfText(prepared.freshBeforeState.oraclePrice ? (prepared.freshBeforeState.collateralAmount * prepared.freshBeforeState.oraclePrice * prepared.freshBeforeState.liquidationThreshold) / prepared.freshBeforeState.debt : null)}</p>
           <p>Liquidation BTC: {moneyOrDash(prepared.freshBeforeState.debt / (prepared.freshBeforeState.collateralAmount * prepared.freshBeforeState.liquidationThreshold))}</p>
         </div>
         <div className="space-y-1">
           <p className="font-semibold text-xs text-muted-foreground uppercase">PROJECTED</p>
           <p>Debt: {formatUsd(prepared.projectedAfterState.projectedDebt)}</p>
-          <p>Collateral: {tokenText(prepared.projectedAfterState.projectedCollateralAmount)} {input.collateralAsset}</p>
+          <p>Collateral: {tokenText(prepared.projectedAfterState.projectedCollateralAmount)} {input.collateralAsset} · ≈ {collateralUsdText(prepared.projectedAfterState.projectedCollateralAmount, prepared.freshBeforeState.oraclePrice)}</p>
           <p>HF: {hfText(prepared.projectedAfterState.projectedHealthFactor)}</p>
           <p>Liquidation BTC: {moneyOrDash(prepared.projectedAfterState.projectedLiquidationBtc)}</p>
           <p>Cushion: {cushionText(prepared.projectedAfterState.projectedCushion)}</p>
@@ -754,7 +848,7 @@ export function PreparedReviewUI({ prepared, onCancel, input, chainName, phase6D
             <p>Estimated network cost: {prepared.estimatedNetworkCost !== null ? formatUsd(prepared.estimatedNetworkCost) : 'Unknown'}</p>
             {prepared.transactions.map((t, i) => (
               <p key={i} className="text-xs">
-                Simulation {t.action}: {t.simulationStatus === 'PASSED' ? '✓ Passed' : t.simulationStatus === 'FAILED' ? `✕ Failed (${t.revertReason})` : 'Unavailable'}
+                Simulation {t.action}: {t.simulationStatus === 'PASSED' ? '✓ Passed' : t.simulationStatus === 'FAILED' ? `✕ Failed (${t.revertReason})` : t.approvalRequired ? 'Deferred until approval' : 'Unavailable'}
               </p>
             ))}
           </>
@@ -766,6 +860,7 @@ export function PreparedReviewUI({ prepared, onCancel, input, chainName, phase6D
         <p>{prepared.hypothetical ? 'Hypothetical scenario parameters applied' : 'Position updated recently'}</p>
         <p>{prepared.hypothetical ? 'Oracle stressed for starting condition' : 'Oracle updated recently'}</p>
         <p>Wallet balance updated recently</p>
+        <p>BTC reference price: {moneyOrDash(prepared.freshBeforeState.oraclePrice)} · collateral USD equivalents are calculated from this fresh oracle value.</p>
       </div>
 
       {prepared.blockingIssues.length > 0 && (
@@ -786,6 +881,10 @@ export function PreparedReviewUI({ prepared, onCancel, input, chainName, phase6D
               <button type="button" className="rounded border px-3 py-2 bg-foreground text-background flex-1" onClick={onContinueToRepay}>
                 Continue to repayment
               </button>
+            ) : onContinueToCollateral && phase6D2Eligibility?.eligible ? (
+              <button type="button" className="rounded border px-3 py-2 bg-foreground text-background flex-1" onClick={onContinueToCollateral}>
+                Continue to add collateral
+              </button>
             ) : (
               <button type="button" className="rounded border px-3 py-2 bg-gray-100 text-gray-400 cursor-not-allowed flex-1" disabled>
                 Execute action
@@ -794,8 +893,10 @@ export function PreparedReviewUI({ prepared, onCancel, input, chainName, phase6D
           </div>
           {onContinueToRepay && phase6D1Eligibility?.eligible ? (
             <p className="text-[10px] text-muted-foreground mt-2 text-center">Phase 6D.1: Morpho Base partial repay only. The repayment screen revalidates the live position again before any wallet request.</p>
+          ) : onContinueToCollateral && phase6D2Eligibility?.eligible ? (
+            <p className="text-[10px] text-muted-foreground mt-2 text-center">Phase 6D.2: Morpho Base cbBTC collateral addition only. The borrow screen revalidates the live position, balance, allowance, and market again before any wallet request.</p>
           ) : (
-            <p className="text-[10px] text-muted-foreground mt-2 text-center">{phase6D1Eligibility?.reason ?? 'This action remains review-only in Phase 6D.1.'}</p>
+            <p className="text-[10px] text-muted-foreground mt-2 text-center">{phase6D2Eligibility?.reason ?? phase6D1Eligibility?.reason ?? 'This action remains review-only.'}</p>
           )}
         </div>
       ) : (

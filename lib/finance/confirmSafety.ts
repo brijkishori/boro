@@ -166,12 +166,14 @@ function row(category: DriftCategory, field: string, from: string, to: string, a
  * position. Requiring byte-for-byte debt equality makes confirm-time validation
  * impossible on protocols such as Morpho because the debt can advance every block.
  *
- * For REPAY only, allow a very small monotonic increase that is consistent with
- * passive interest accrual. Any debt decrease, collateral change, or materially
- * larger debt increase still forces a new review.
+ * For actions that do not intentionally increase debt before the wallet request
+ * (REPAY and SUPPLY_COLLATERAL), allow a very small monotonic increase that is
+ * consistent with passive interest accrual. Any debt decrease, collateral change,
+ * or materially larger debt increase still forces a new review.
  */
-function expectedRepayDebtAccrual(reviewed: ConfirmSnapshot, fresh: ConfirmSnapshot): boolean {
-  if (reviewed.action !== 'REPAY' || fresh.action !== 'REPAY') return false;
+function expectedPassiveDebtAccrual(reviewed: ConfirmSnapshot, fresh: ConfirmSnapshot): boolean {
+  if (reviewed.action !== fresh.action) return false;
+  if (reviewed.action !== 'REPAY' && reviewed.action !== 'SUPPLY_COLLATERAL') return false;
 
   const before = BigInt(reviewed.currentDebt);
   const after = BigInt(fresh.currentDebt);
@@ -215,8 +217,8 @@ export function compareConfirmSnapshots(reviewed: ConfirmSnapshot, fresh: Confir
   }
   const collateralChanged = reviewed.currentCollateral !== fresh.currentCollateral;
   const debtChanged = reviewed.currentDebt !== fresh.currentDebt;
-  const benignRepayAccrual = debtChanged && expectedRepayDebtAccrual(reviewed, fresh);
-  if (collateralChanged || (debtChanged && !benignRepayAccrual)) {
+  const benignPassiveDebtAccrual = debtChanged && expectedPassiveDebtAccrual(reviewed, fresh);
+  if (collateralChanged || (debtChanged && !benignPassiveDebtAccrual)) {
     changes.push(row(
       'POSITION_DRIFT',
       'On-chain position',

@@ -296,3 +296,48 @@ test('K: REPAY confirm still blocks a debt decrease because another repayment ma
   const decision = decideConfirmation(reviewed, fresh, { now });
   assert.equal(decision.status, 'rereview');
 });
+
+
+test('L: SUPPLY_COLLATERAL confirm allows tiny monotonic debt growth caused by passive interest accrual', () => {
+  const now = Date.now();
+  const reviewedVenue = venue({ borrowApr: 0.0481, freshness: { source: 'test', fetchedAt: now - 20_000 } });
+  const freshVenue = venue({ borrowApr: 0.0481, freshness: { source: 'test', fetchedAt: now } });
+  const reviewedDebt = 20_399_470_000n;
+  const freshDebt = reviewedDebt + 2_000n; // $0.002 of passive accrual
+  const reviewed = snap(reviewedVenue, changeInput(reviewedVenue, {
+    action: 'SUPPLY_COLLATERAL',
+    amount: 1_000n, // 0.00001 cbBTC at 8 decimals
+    currentCollateral: 100_000_000n,
+    currentDebt: reviewedDebt,
+    spendableBalance: 195_000n,
+  }));
+  const fresh = snap(freshVenue, changeInput(freshVenue, {
+    action: 'SUPPLY_COLLATERAL',
+    amount: 1_000n,
+    currentCollateral: 100_000_000n,
+    currentDebt: freshDebt,
+    spendableBalance: 195_000n,
+  }));
+  const decision = decideConfirmation(reviewed, fresh, { now });
+  assert.equal(decision.status, 'proceed');
+  assert.equal(decision.invokeWallet, true);
+});
+
+test('M: SUPPLY_COLLATERAL confirm still blocks a collateral change before wallet confirmation', () => {
+  const now = Date.now();
+  const reviewedVenue = venue({ freshness: { source: 'test', fetchedAt: now - 20_000 } });
+  const freshVenue = venue({ freshness: { source: 'test', fetchedAt: now } });
+  const reviewed = snap(reviewedVenue, changeInput(reviewedVenue, {
+    action: 'SUPPLY_COLLATERAL', amount: 1_000n, currentCollateral: 100_000_000n,
+    currentDebt: 20_399_470_000n, spendableBalance: 195_000n,
+  }));
+  const fresh = snap(freshVenue, changeInput(freshVenue, {
+    action: 'SUPPLY_COLLATERAL', amount: 1_000n, currentCollateral: 100_001_000n,
+    currentDebt: 20_399_472_000n, spendableBalance: 195_000n,
+  }));
+  const decision = decideConfirmation(reviewed, fresh, { now });
+  assert.equal(decision.status, 'rereview');
+  if (decision.status === 'rereview') {
+    assert.ok(decision.changes.some((change) => change.category === 'POSITION_DRIFT'));
+  }
+});

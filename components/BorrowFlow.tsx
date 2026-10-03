@@ -46,6 +46,7 @@ import {
   type DriftChange,
 } from '@/lib/finance/confirmSafety';
 import { fetchFreshConfirmReads, snapshotFromFreshReads, withConfirmTimeout } from '@/lib/finance/fetchConfirm';
+import { publicClient } from '@/lib/rpc';
 import { buildLoanReadiness, isMaterialTransaction } from '@/lib/finance/readiness';
 import PositionChangeReview from '@/components/PositionChangeReview';
 import LoanReadinessReview from '@/components/LoanReadinessReview';
@@ -449,6 +450,101 @@ export default function BorrowFlow({
     });
   }
 
+  async function revalidateSupplyAfterApproval() {
+    const change = reviewRef.current;
+    const market = executionVenue();
+    if (!change || !market || !address || reviewAction !== 'SUPPLY_COLLATERAL' || !supplyAmount || supplyAmount <= 0n) return;
+
+    setConfirmError('');
+    const reviewed = reviewedSnapRef.current ?? buildConfirmSnapshot({
+      action: 'SUPPLY_COLLATERAL',
+      venue: market,
+      change,
+      currentCollateral: existingCollateral,
+      currentDebt: existingDebt,
+      walletBalance,
+      plannedAmount: supplyAmount,
+      fetchedAt: market.freshness?.fetchedAt ?? fetchedAt,
+    });
+
+    const freshReadsRef: { current: Awaited<ReturnType<typeof fetchFreshConfirmReads>> | null } = { current: null };
+    const decision = await runConfirmGuard({
+      reviewed,
+      lock: confirmLock.current,
+      loadFresh: async () => {
+        const reads = await withConfirmTimeout(fetchFreshConfirmReads({
+          venue: market,
+          user: address,
+          action: 'SUPPLY_COLLATERAL',
+        }));
+        freshReadsRef.current = reads;
+        const built = snapshotFromFreshReads(reads, {
+          action: 'SUPPLY_COLLATERAL',
+          venue: reads.venue,
+          amount: supplyAmount,
+          currentCollateral: reads.position.collateral,
+          currentDebt: reads.position.debt,
+          spendableBalance: reads.walletBalance,
+          priceUsd: reads.venue.priceUsd,
+          wrongNetwork: isConnected && chain?.id !== reads.venue.chainId,
+          approvalNeeded: false,
+          resetNeeded: false,
+          needsEnterMarket: false,
+          borrowRoom: reads.position.borrowRoom,
+          minBorrow: reads.position.extra?.minBorrow ?? minBorrow,
+          fetchedAt: reads.fetchedAt,
+        });
+        return built.snapshot;
+      },
+    });
+
+    const freshReads = freshReadsRef.current;
+
+    if (decision.status === 'busy') return;
+    if (decision.status === 'failed') {
+      setRunAfterApproval(false);
+      setConfirmError(decision.message || CONFIRM_FAIL_MESSAGE);
+      return;
+    }
+    if (decision.status === 'rereview') {
+      setRunAfterApproval(false);
+      if (freshReads) applyFreshReads(freshReads);
+      reviewedSnapRef.current = decision.fresh;
+      setDriftChanges(decision.changes);
+      setConfirmError(CONFIRM_DRIFT_MESSAGE);
+      return;
+    }
+    if (!decision.invokeWallet || !freshReads) return;
+
+    const freshVenue = freshReads.venue;
+    const call = adapterFor(freshVenue).buildSupply(freshVenue, address, supplyAmount, 'borrow');
+    if (!call) {
+      setRunAfterApproval(false);
+      setConfirmError('Unable to prepare the collateral-supply transaction after approval.');
+      return;
+    }
+
+    try {
+      await publicClient(freshVenue.chainId).simulateContract({
+        account: address,
+        address: call.address,
+        abi: call.abi,
+        functionName: call.functionName as never,
+        args: call.args as never,
+      });
+    } catch (error) {
+      setRunAfterApproval(false);
+      setConfirmError(error instanceof Error ? `Collateral supply simulation failed after approval: ${error.message}` : 'Collateral supply simulation failed after approval.');
+      return;
+    }
+
+    applyFreshReads(freshReads);
+    execVenueRef.current = freshVenue;
+    reviewedSnapRef.current = decision.fresh;
+    setRunAfterApproval(false);
+    requestWalletAfterConfirm(decision, () => { void supply(); });
+  }
+
   function applyFreshReads(reads: Awaited<ReturnType<typeof fetchFreshConfirmReads>>) {
     setConfirmVenue(reads.venue);
     setConfirmCollateral(reads.position.collateral);
@@ -466,6 +562,10 @@ export default function BorrowFlow({
   continueRef.current = (action) => {
     if (action === 'reset' && supplyAmount) {
       void approve(supplyAmount);
+      return;
+    }
+    if (action === 'approve' && reviewAction === 'SUPPLY_COLLATERAL') {
+      void revalidateSupplyAfterApproval();
       return;
     }
     if (action === 'approve' || (action === 'supply' && reviewAction === 'BORROW')) {
