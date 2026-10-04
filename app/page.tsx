@@ -4,6 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } 
 import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
 import { takeRemedyHandoff, type RemedyHandoff } from '@/lib/finance/actionPlanner';
+import { advancePhase6D3AfterRepay, clearPhase6D3MixedExecution, completePhase6D3MixedExecution, markPhase6D3CollateralSubmitted, markPhase6D3RepaySubmitted, readPhase6D3MixedExecution, type Phase6D3MixedProgress } from '@/lib/finance/assistedMixed';
 import { useAccount, useConnect } from 'wagmi';
 import type { Address } from 'viem';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
@@ -72,6 +73,7 @@ function Dashboard() {
   const { network, setNetwork } = useNetworkFilter();
   const started = useRef(false);
   const [handoff, setHandoff] = useState<RemedyHandoff | null>(null);
+  const [mixedProgress, setMixedProgress] = useState<Phase6D3MixedProgress | null>(null);
   const planner = useSyncExternalStore(subscribePlanner, plannerSnapshot, plannerServerSnapshot);
   
   // Use a deterministic initial mode for SSR and first render to prevent Radix ID mismatch.
@@ -79,7 +81,32 @@ function Dashboard() {
   const selectedId = selectedOverride ?? marketParam;
 
   useEffect(() => {
-    setHandoff(takeRemedyHandoff(window.sessionStorage));
+    const stagedHandoff = takeRemedyHandoff(window.sessionStorage);
+    const progress = readPhase6D3MixedExecution(window.sessionStorage);
+    setMixedProgress(progress);
+
+    if (!progress || progress.stage === 'COMPLETE') {
+      setHandoff(stagedHandoff);
+      return;
+    }
+
+    setSelectedOverride(progress.marketId);
+    setPinned(true);
+    setExploreOpen(true);
+
+    if (progress.stage === 'REPAY_PENDING') {
+      setModeOverride('repay');
+      setHandoff(stagedHandoff?.type === 'REPAY' ? stagedHandoff : progress.repayHandoff);
+      return;
+    }
+    if (progress.stage === 'COLLATERAL_PENDING') {
+      setModeOverride('borrow');
+      setHandoff(stagedHandoff?.type === 'ADD_COLLATERAL' ? stagedHandoff : progress.collateralHandoff);
+      return;
+    }
+
+    // A transaction was submitted before a reload. Do not seed another transaction automatically.
+    setHandoff(null);
   }, []);
 
   useEffect(() => {
@@ -167,6 +194,71 @@ function Dashboard() {
     openPosition(venue, 'repay');
     setExploreOpen(true);
     scrollToId('execution-workflow');
+  }
+
+  function showMixedLeg(progress: Phase6D3MixedProgress, stage: 'REPAY_PENDING' | 'COLLATERAL_PENDING') {
+    setMixedProgress(progress);
+    setSelectedOverride(progress.marketId);
+    setPinned(true);
+    setExploreOpen(true);
+    if (stage === 'REPAY_PENDING') {
+      setModeOverride('repay');
+      setHandoff(progress.repayHandoff);
+      window.history.replaceState(null, '', `/?tab=repay&market=${encodeURIComponent(progress.marketId)}&mixed=1`);
+    } else {
+      setModeOverride('borrow');
+      setHandoff(progress.collateralHandoff);
+      window.history.replaceState(null, '', `/?tab=borrow&market=${encodeURIComponent(progress.marketId)}&mixed=1`);
+    }
+    requestAnimationFrame(() => scrollToId('execution-workflow'));
+  }
+
+  function handleMixedRepaySubmitted(hash: string) {
+    if (!mixedProgress || (mixedProgress.stage !== 'REPAY_PENDING' && mixedProgress.stage !== 'REPAY_SUBMITTED')) return;
+    const next = markPhase6D3RepaySubmitted(window.sessionStorage, mixedProgress.id, hash);
+    if (next) setMixedProgress(next);
+  }
+
+  function handleMixedRepayComplete() {
+    if (!mixedProgress || (mixedProgress.stage !== 'REPAY_PENDING' && mixedProgress.stage !== 'REPAY_SUBMITTED')) return;
+    const next = advancePhase6D3AfterRepay(window.sessionStorage, mixedProgress.id);
+    if (!next || next.stage !== 'COLLATERAL_PENDING') return;
+    showMixedLeg(next, 'COLLATERAL_PENDING');
+  }
+
+  function handleMixedCollateralSubmitted(hash: string) {
+    if (!mixedProgress || (mixedProgress.stage !== 'COLLATERAL_PENDING' && mixedProgress.stage !== 'COLLATERAL_SUBMITTED')) return;
+    const next = markPhase6D3CollateralSubmitted(window.sessionStorage, mixedProgress.id, hash);
+    if (next) setMixedProgress(next);
+  }
+
+  function handleMixedCollateralComplete() {
+    if (!mixedProgress || (mixedProgress.stage !== 'COLLATERAL_PENDING' && mixedProgress.stage !== 'COLLATERAL_SUBMITTED')) return;
+    const next = completePhase6D3MixedExecution(window.sessionStorage, mixedProgress.id);
+    if (!next) return;
+    setMixedProgress(next);
+    setHandoff(null);
+  }
+
+  function resumeMixedAfterVerifiedRepay() {
+    if (!mixedProgress || mixedProgress.stage !== 'REPAY_SUBMITTED') return;
+    const next = advancePhase6D3AfterRepay(window.sessionStorage, mixedProgress.id);
+    if (next?.stage === 'COLLATERAL_PENDING') showMixedLeg(next, 'COLLATERAL_PENDING');
+  }
+
+  function finishMixedAfterVerifiedCollateral() {
+    if (!mixedProgress || mixedProgress.stage !== 'COLLATERAL_SUBMITTED') return;
+    const next = completePhase6D3MixedExecution(window.sessionStorage, mixedProgress.id);
+    if (next) {
+      setMixedProgress(next);
+      setHandoff(null);
+    }
+  }
+
+  function dismissMixedProgress() {
+    clearPhase6D3MixedExecution(window.sessionStorage);
+    setMixedProgress(null);
+    setHandoff(null);
   }
 
   return (
@@ -325,6 +417,46 @@ function Dashboard() {
             </>
           )}
 
+          {mixedProgress && (
+            <Card className="border-blue-500/40">
+              <CardContent className="space-y-2 p-4 text-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold">Phase 6D.3 mixed recovery</p>
+                    <p className="text-xs text-muted-foreground">
+                      {mixedProgress.stage === 'REPAY_PENDING' && 'Step 1 of 2: review and confirm the USDC repayment.'}
+                      {mixedProgress.stage === 'REPAY_SUBMITTED' && 'Repayment transaction submitted. Do not resubmit after a reload; verify the repayment is reflected before continuing.'}
+                      {mixedProgress.stage === 'COLLATERAL_PENDING' && 'Step 2 of 2: the repayment reconciled. Review and confirm the cbBTC collateral addition using the updated live position.'}
+                      {mixedProgress.stage === 'COLLATERAL_SUBMITTED' && 'Collateral transaction submitted. Do not resubmit after a reload; verify the collateral is reflected before finishing.'}
+                      {mixedProgress.stage === 'COMPLETE' && 'Mixed recovery complete. Both position-changing legs confirmed and reconciled.'}
+                    </p>
+                  </div>
+                  {mixedProgress.stage === 'COMPLETE' && <Button type="button" size="sm" variant="outline" onClick={dismissMixedProgress}>Dismiss</Button>}
+                </div>
+                {mixedProgress.stage === 'REPAY_SUBMITTED' && (
+                  <div className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs">
+                    <p className="font-semibold">Reload recovery safeguard</p>
+                    <p>Only continue after Loans/Morpho shows that the repayment actually landed. If only an approval occurred, cancel this mixed recovery and start it again.</p>
+                    <div className="mt-2 flex gap-2">
+                      <Button type="button" size="sm" onClick={resumeMixedAfterVerifiedRepay}>Repayment is reflected — continue</Button>
+                      <Button type="button" size="sm" variant="outline" onClick={dismissMixedProgress}>Cancel mixed recovery</Button>
+                    </div>
+                  </div>
+                )}
+                {mixedProgress.stage === 'COLLATERAL_SUBMITTED' && (
+                  <div className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs">
+                    <p className="font-semibold">Reload recovery safeguard</p>
+                    <p>Only finish after Loans/Morpho shows the collateral increase. This prevents an accidental duplicate supply after a reload.</p>
+                    <div className="mt-2 flex gap-2">
+                      <Button type="button" size="sm" onClick={finishMixedAfterVerifiedCollateral}>Collateral is reflected — finish</Button>
+                      <Button type="button" size="sm" variant="outline" onClick={dismissMixedProgress}>Cancel mixed recovery</Button>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           <Tabs value={mode} onValueChange={(value) => setMode(value as Mode)}>
             <TabsList className="mb-2 grid h-12 w-full grid-cols-3">
               <TabsTrigger value="borrow" className="text-sm font-bold">Borrow</TabsTrigger>
@@ -355,6 +487,8 @@ function Dashboard() {
                     initialCollateral={scenario?.collateralAmount}
                     initialBorrowUsd={scenario?.borrowAmount}
                     handoff={handoff && selected && handoff.marketId === selected.id && handoff.type === 'ADD_COLLATERAL' ? handoff : null}
+                    onAssistedSubmitted={mixedProgress && (mixedProgress.stage === 'COLLATERAL_PENDING' || mixedProgress.stage === 'COLLATERAL_SUBMITTED') ? handleMixedCollateralSubmitted : undefined}
+                    onAssistedComplete={mixedProgress && (mixedProgress.stage === 'COLLATERAL_PENDING' || mixedProgress.stage === 'COLLATERAL_SUBMITTED') ? handleMixedCollateralComplete : undefined}
                   />
                 )}
               </TabsContent>
@@ -362,7 +496,15 @@ function Dashboard() {
                 <LendFlow key={selected?.id ?? 'lend'} quote={selected} fetchedAt={payload?.fetchedAt ?? 0} venues={ranked} onSelect={chooseVenue} />
               </TabsContent>
               <TabsContent value="repay">
-                <RepayFlow key={selected?.id ?? 'repay'} quote={selected} venues={ranked} onSelect={chooseVenue} handoff={handoff && selected && handoff.marketId === selected.id && handoff.type === 'REPAY' ? handoff : null} />
+                <RepayFlow
+                  key={selected?.id ?? 'repay'}
+                  quote={selected}
+                  venues={ranked}
+                  onSelect={chooseVenue}
+                  handoff={handoff && selected && handoff.marketId === selected.id && handoff.type === 'REPAY' ? handoff : null}
+                  onAssistedSubmitted={mixedProgress && (mixedProgress.stage === 'REPAY_PENDING' || mixedProgress.stage === 'REPAY_SUBMITTED') ? handleMixedRepaySubmitted : undefined}
+                  onAssistedComplete={mixedProgress && (mixedProgress.stage === 'REPAY_PENDING' || mixedProgress.stage === 'REPAY_SUBMITTED') ? handleMixedRepayComplete : undefined}
+                />
               </TabsContent>
             </section>
           </Tabs>

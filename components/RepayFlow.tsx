@@ -48,7 +48,7 @@ import { useAudit } from './useAudit';
 import { LoanLedger } from './LoanLedger';
 import { asBig, episodeKey, findOpenEpisode, formatDuration } from '@/lib/audit';
 
-export default function RepayFlow({ quote, venues = [], onSelect, handoff = null }: { quote: Venue | null; venues?: Venue[]; onSelect?: (id: string) => void; handoff?: RemedyHandoff | null }) {
+export default function RepayFlow({ quote, venues = [], onSelect, handoff = null, onAssistedSubmitted, onAssistedComplete }: { quote: Venue | null; venues?: Venue[]; onSelect?: (id: string) => void; handoff?: RemedyHandoff | null; onAssistedSubmitted?: (hash: string) => void; onAssistedComplete?: () => void }) {
   const { address, chain, isConnected } = useAccount();
   const [repayAmount, setRepayAmount] = useState<bigint | null>(null);
   const [withdrawAmount, setWithdrawAmount] = useState<bigint | null>(null);
@@ -61,6 +61,8 @@ export default function RepayFlow({ quote, venues = [], onSelect, handoff = null
   const [handoffKey, setHandoffKey] = useState(0);
   const [handoffNotice, setHandoffNotice] = useState('');
   const appliedHandoff = useRef(false);
+  const assistedSubmittedHash = useRef('');
+  const assistedCompleteNonce = useRef(0);
   const { send, isBusy, isAwaitingWallet, confirmed, hash, phase, receiptBlock, statusMessage, retryPositionRefresh, cancelPending } = useSendTx();
   const [reviewAction, setReviewAction] = useState<PositionChangeAction | null>(null);
   const [runAfterApproval, setRunAfterApproval] = useState(false);
@@ -155,6 +157,19 @@ export default function RepayFlow({ quote, venues = [], onSelect, handoff = null
     if (!confirmed || !runAfterApproval) return;
     continueRef.current(confirmed.action);
   }, [confirmed, runAfterApproval]);
+
+  useEffect(() => {
+    if (!handoff || handoff.type !== 'REPAY' || !onAssistedSubmitted || !hash || assistedSubmittedHash.current === hash) return;
+    assistedSubmittedHash.current = hash;
+    onAssistedSubmitted(hash);
+  }, [handoff, hash, onAssistedSubmitted]);
+
+  useEffect(() => {
+    if (!handoff || handoff.type !== 'REPAY' || !onAssistedComplete || !confirmed || confirmed.refreshFailed || confirmed.action !== 'repay' || !confirmed.snapshot) return;
+    if (assistedCompleteNonce.current === confirmed.nonce) return;
+    assistedCompleteNonce.current = confirmed.nonce;
+    onAssistedComplete();
+  }, [confirmed, handoff, onAssistedComplete]);
 
   useEffect(() => {
     if (appliedHandoff.current || !handoff || !quote || handoff.type !== 'REPAY' || handoff.marketId !== quote.id) return;

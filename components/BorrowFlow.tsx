@@ -74,6 +74,8 @@ export default function BorrowFlow({
   initialCollateral,
   initialBorrowUsd,
   handoff = null,
+  onAssistedSubmitted,
+  onAssistedComplete,
 }: {
   quote: Venue | null;
   fetchedAt: number;
@@ -82,6 +84,8 @@ export default function BorrowFlow({
   initialCollateral?: number;
   initialBorrowUsd?: number;
   handoff?: RemedyHandoff | null;
+  onAssistedSubmitted?: (hash: string) => void;
+  onAssistedComplete?: () => void;
 }) {
   const { address, chain, isConnected } = useAccount();
   const [supplyAmount, setSupplyAmount] = useState<bigint | null>(null);
@@ -108,6 +112,8 @@ export default function BorrowFlow({
   const [confirmError, setConfirmError] = useState('');
   const [handoffNotice, setHandoffNotice] = useState('');
   const appliedHandoff = useRef(false);
+  const assistedSubmittedHash = useRef('');
+  const assistedCompleteNonce = useRef(0);
   const [driftChanges, setDriftChanges] = useState<DriftChange[]>([]);
   const confirmLock = useRef<ConfirmLock>({ busy: false });
   const reviewedSnapRef = useRef<ConfirmSnapshot | null>(null);
@@ -197,6 +203,19 @@ export default function BorrowFlow({
     if (!confirmed || !runAfterApproval) return;
     continueRef.current(confirmed.action);
   }, [confirmed, runAfterApproval]);
+
+  useEffect(() => {
+    if (!handoff || handoff.type !== 'ADD_COLLATERAL' || !onAssistedSubmitted || !hash || assistedSubmittedHash.current === hash) return;
+    assistedSubmittedHash.current = hash;
+    onAssistedSubmitted(hash);
+  }, [handoff, hash, onAssistedSubmitted]);
+
+  useEffect(() => {
+    if (!handoff || handoff.type !== 'ADD_COLLATERAL' || !onAssistedComplete || !confirmed || confirmed.refreshFailed || confirmed.action !== 'supply' || !confirmed.snapshot) return;
+    if (assistedCompleteNonce.current === confirmed.nonce) return;
+    assistedCompleteNonce.current = confirmed.nonce;
+    onAssistedComplete();
+  }, [confirmed, handoff, onAssistedComplete]);
 
   useEffect(() => {
     if (appliedHandoff.current || !handoff || !quote || handoff.type !== 'ADD_COLLATERAL' || handoff.marketId !== quote.id) return;

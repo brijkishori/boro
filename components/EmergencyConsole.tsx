@@ -12,6 +12,7 @@ import { chainLabel, isChainId, type Venue, type ChainId } from '@/lib/protocol'
 import { buildPlannerCards, stageRemedyHandoff } from '@/lib/finance/actionPlanner';
 import { buildPhase6D1ManualRepayPlan, buildPhase6D1RepayHandoff, phase6D1ManualRepayValidation, phase6D1RepayEligibility } from '@/lib/finance/assistedRepay';
 import { buildPhase6D2CollateralHandoff, buildPhase6D2ManualCollateralPlan, phase6D2CollateralEligibility, phase6D2ManualCollateralValidation } from '@/lib/finance/assistedCollateral';
+import { buildPhase6D3ManualMixedPlan, buildPhase6D3MixedExecution, phase6D3ManualMixedValidation, phase6D3MixedEligibility, stagePhase6D3MixedExecution } from '@/lib/finance/assistedMixed';
 import { publicClient } from '@/lib/rpc';
 import { fetchFreshConfirmReads } from '@/lib/finance/fetchConfirm';
 import { formatUnits, type Address } from 'viem';
@@ -41,6 +42,8 @@ export default function EmergencyConsole({
   const [targetChoice, setTargetChoice] = useState<number>(report.thresholds.preferredHealthFactor || 2.5);
   const [manualRepayInput, setManualRepayInput] = useState('5');
   const [manualCollateralInput, setManualCollateralInput] = useState('0.00001');
+  const [manualMixedRepayInput, setManualMixedRepayInput] = useState('5');
+  const [manualMixedCollateralInput, setManualMixedCollateralInput] = useState('0.00001');
 
   const state = report.decision.currentState;
   const isNormal = state === 'NORMAL';
@@ -199,6 +202,29 @@ export default function EmergencyConsole({
       collateralAmount: manualCollateralAmount,
     });
   }, [input, manualCollateralAmount, manualCollateralValidation, manualCollateralVisible, networkContext, venue, walletResources]);
+
+  const manualMixedRepayAmount = Number(manualMixedRepayInput);
+  const manualMixedCollateralAmount = Number(manualMixedCollateralInput);
+  const manualMixedVisible = manualCollateralVisible && manualRepayVisible;
+  const manualMixedValidation = manualMixedVisible
+    ? phase6D3ManualMixedValidation({
+        riskInput: input,
+        repayAmount: manualMixedRepayAmount,
+        collateralAmount: manualMixedCollateralAmount,
+        venue,
+      })
+    : null;
+  const manualMixedPlan = useMemo(() => {
+    if (!manualMixedVisible || !venue || manualMixedValidation) return null;
+    return buildPhase6D3ManualMixedPlan({
+      riskInput: input,
+      walletResources,
+      networkContext,
+      venue,
+      repayAmount: manualMixedRepayAmount,
+      collateralAmount: manualMixedCollateralAmount,
+    });
+  }, [input, manualMixedCollateralAmount, manualMixedRepayAmount, manualMixedValidation, manualMixedVisible, networkContext, venue, walletResources]);
 
   return (
     <div className="space-y-4">
@@ -471,6 +497,52 @@ export default function EmergencyConsole({
         </div>
       )}
 
+
+      {manualMixedVisible && (
+        <div className="rounded border p-3 space-y-3">
+          <div className="space-y-1">
+            <p className="font-semibold">MANUAL ASSISTED MIXED RECOVERY — LIVE POSITION</p>
+            <p className="text-xs text-muted-foreground">
+              Phase 6D.3 combines a partial USDC repayment and a cbBTC collateral addition. It executes as two guarded legs: repayment first, then collateral only after the repayment confirms and the updated position is reconciled. Each leg requires its own explicit wallet confirmation.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block text-sm">
+              Repay ({input.debtAsset})
+              <input
+                className="mt-1 h-9 w-full rounded border bg-background px-2"
+                inputMode="decimal"
+                value={manualMixedRepayInput}
+                onChange={(event) => setManualMixedRepayInput(event.target.value)}
+                aria-label={`Mixed recovery repayment amount in ${input.debtAsset}`}
+              />
+              <span className="mt-1 block text-[10px] text-muted-foreground">Default smoke-test amount: $5</span>
+            </label>
+            <label className="block text-sm">
+              Add collateral ({input.collateralAsset})
+              <input
+                className="mt-1 h-9 w-full rounded border bg-background px-2"
+                inputMode="decimal"
+                value={manualMixedCollateralInput}
+                onChange={(event) => setManualMixedCollateralInput(event.target.value)}
+                aria-label={`Mixed recovery collateral amount in ${input.collateralAsset}`}
+              />
+              <span className="mt-1 block text-[10px] text-muted-foreground">≈ {collateralUsdText(manualMixedCollateralAmount || 0, input.oraclePrice)} at the current BTC reference price</span>
+            </label>
+          </div>
+          <div className="text-xs text-muted-foreground space-y-0.5">
+            <p>USDC available on {currentChainName}: {formatUsdExact(walletResources.debtAssetAvailable ?? 0)}</p>
+            <p>cbBTC available on {currentChainName}: {tokenText(walletResources.collateralAvailable ?? 0)} · ≈ {collateralUsdText(walletResources.collateralAvailable ?? 0, input.oraclePrice)}</p>
+            <p>BTC reference price: {moneyOrDash(input.oraclePrice)} <span className="text-[10px]">(USD equivalents update with live oracle data)</span></p>
+          </div>
+          {manualMixedValidation ? (
+            <p className="text-xs text-red-500">{manualMixedValidation}</p>
+          ) : manualMixedPlan ? (
+            <EmergencyPlanCard plan={manualMixedPlan} input={input} chainName={currentChainName} venue={venue} />
+          ) : null}
+        </div>
+      )}
+
       <div className="border-t pt-2 space-y-1">
         <p className="font-semibold">AVAILABLE NOW — {currentChainName.toUpperCase()}</p>
         <p>{input.debtAsset} {moneyOrDash(input.walletDebtAssetBalance ?? null)}</p>
@@ -509,6 +581,9 @@ function EmergencyPlanCard({ plan, input, chainName, venue }: { plan: ExecutionP
     : undefined;
   const collateralEligibility = prepared && venue && plan.mode === 'EMERGENCY_COLLATERAL'
     ? phase6D2CollateralEligibility({ plan, prepared, venue, wallet: input.wallet })
+    : undefined;
+  const mixedEligibility = prepared && venue && plan.mode === 'EMERGENCY_MIXED'
+    ? phase6D3MixedEligibility({ plan, prepared, venue, wallet: input.wallet })
     : undefined;
   
   async function handlePrepare() {
@@ -622,6 +697,16 @@ function EmergencyPlanCard({ plan, input, chainName, venue }: { plan: ExecutionP
     window.location.assign(`/?tab=borrow&market=${encodeURIComponent(venue.id)}`);
   }
 
+  function continueToMixed() {
+    if (!prepared || !venue) return;
+    const decision = phase6D3MixedEligibility({ plan, prepared, venue, wallet: input.wallet });
+    if (!decision.eligible) return;
+    const progress = buildPhase6D3MixedExecution({ plan, prepared, venue, wallet: input.wallet });
+    stagePhase6D3MixedExecution(window.sessionStorage, progress);
+    stageRemedyHandoff(window.sessionStorage, progress.repayHandoff);
+    window.location.assign(`/?tab=repay&market=${encodeURIComponent(venue.id)}&mixed=1`);
+  }
+
   if (prepared) {
     return (
       <PreparedReviewUI
@@ -633,6 +718,8 @@ function EmergencyPlanCard({ plan, input, chainName, venue }: { plan: ExecutionP
         onContinueToRepay={repayEligibility?.eligible ? continueToRepay : undefined}
         phase6D2Eligibility={collateralEligibility}
         onContinueToCollateral={collateralEligibility?.eligible ? continueToCollateral : undefined}
+        phase6D3Eligibility={mixedEligibility}
+        onContinueToMixed={mixedEligibility?.eligible ? continueToMixed : undefined}
       />
     );
   }
@@ -786,7 +873,7 @@ function isFresh(timestamp: number | null): boolean {
   return Date.now() - timestamp < 5 * 60_000;
 }
 
-export function PreparedReviewUI({ prepared, onCancel, input, chainName, phase6D1Eligibility, onContinueToRepay, phase6D2Eligibility, onContinueToCollateral }: { prepared: PreparedExecution; onCancel: () => void; input: RiskMonitorInput; chainName: string; phase6D1Eligibility?: { eligible: boolean; reason: string | null }; onContinueToRepay?: () => void; phase6D2Eligibility?: { eligible: boolean; reason: string | null }; onContinueToCollateral?: () => void }) {
+export function PreparedReviewUI({ prepared, onCancel, input, chainName, phase6D1Eligibility, onContinueToRepay, phase6D2Eligibility, onContinueToCollateral, phase6D3Eligibility, onContinueToMixed }: { prepared: PreparedExecution; onCancel: () => void; input: RiskMonitorInput; chainName: string; phase6D1Eligibility?: { eligible: boolean; reason: string | null }; onContinueToRepay?: () => void; phase6D2Eligibility?: { eligible: boolean; reason: string | null }; onContinueToCollateral?: () => void; phase6D3Eligibility?: { eligible: boolean; reason: string | null }; onContinueToMixed?: () => void }) {
   const isReady = prepared.readiness === 'READY' && prepared.executable !== false;
   const actionTitle = prepared.transactions.map((t) => {
     const usdEquivalent = t.asset === input.collateralAsset ? ` (≈ ${collateralUsdText(t.amount, prepared.freshBeforeState.oraclePrice)})` : '';
@@ -877,7 +964,11 @@ export function PreparedReviewUI({ prepared, onCancel, input, chainName, phase6D
           <p className="font-semibold text-green-600 mb-2">Ready for execution</p>
           <div className="flex gap-2">
             <button type="button" className="rounded border px-3 py-2 flex-1" onClick={onCancel}>Cancel</button>
-            {onContinueToRepay && phase6D1Eligibility?.eligible ? (
+            {onContinueToMixed && phase6D3Eligibility?.eligible ? (
+              <button type="button" className="rounded border px-3 py-2 bg-foreground text-background flex-1" onClick={onContinueToMixed}>
+                Start mixed recovery
+              </button>
+            ) : onContinueToRepay && phase6D1Eligibility?.eligible ? (
               <button type="button" className="rounded border px-3 py-2 bg-foreground text-background flex-1" onClick={onContinueToRepay}>
                 Continue to repayment
               </button>
@@ -891,12 +982,14 @@ export function PreparedReviewUI({ prepared, onCancel, input, chainName, phase6D
               </button>
             )}
           </div>
-          {onContinueToRepay && phase6D1Eligibility?.eligible ? (
+          {onContinueToMixed && phase6D3Eligibility?.eligible ? (
+            <p className="text-[10px] text-muted-foreground mt-2 text-center">Phase 6D.3: Morpho Base mixed recovery executes in two separately confirmed legs. Repayment runs first; collateral is offered only after the repayment confirms and the updated position reconciles.</p>
+          ) : onContinueToRepay && phase6D1Eligibility?.eligible ? (
             <p className="text-[10px] text-muted-foreground mt-2 text-center">Phase 6D.1: Morpho Base partial repay only. The repayment screen revalidates the live position again before any wallet request.</p>
           ) : onContinueToCollateral && phase6D2Eligibility?.eligible ? (
             <p className="text-[10px] text-muted-foreground mt-2 text-center">Phase 6D.2: Morpho Base cbBTC collateral addition only. The borrow screen revalidates the live position, balance, allowance, and market again before any wallet request.</p>
           ) : (
-            <p className="text-[10px] text-muted-foreground mt-2 text-center">{phase6D2Eligibility?.reason ?? phase6D1Eligibility?.reason ?? 'This action remains review-only.'}</p>
+            <p className="text-[10px] text-muted-foreground mt-2 text-center">{phase6D3Eligibility?.reason ?? phase6D2Eligibility?.reason ?? phase6D1Eligibility?.reason ?? 'This action remains review-only.'}</p>
           )}
         </div>
       ) : (
