@@ -1,5 +1,4 @@
 'use client';
-
 import { useMemo } from 'react';
 import { useAccount } from 'wagmi';
 import { episodeForVenue, useAudit } from '@/components/useAudit';
@@ -9,14 +8,16 @@ import { loanRateHistory } from '@/lib/finance/openingApr';
 import { episodeKey, reconcileSeedOnlyOpenEpisodes } from '@/lib/audit';
 import { buildActiveLoanView, type ActiveLoanView } from '@/lib/finance/loanView';
 import { activeDebtPositions, zeroDebtMarkets } from '@/lib/finance/portfolio';
-
+import { normalizeCompoundLoanBookPositions } from '@/lib/finance/compoundPositions';
 export function useLoanBook() {
   const { address, isConnected } = useAccount();
   const rates = useRates();
   const venues = rates.payload?.venues ?? [];
   const positions = useAllPositions(venues, address);
   const rawAudit = useAudit(address);
-  const borrowMarkets = positions.positions.filter((item) => item.venue.action === 'borrow' && (item.snapshot.debt > 0n || item.snapshot.collateral > 0n));
+  const borrowMarkets = normalizeCompoundLoanBookPositions(
+    positions.positions.filter((item) => item.venue.action === 'borrow' && (item.snapshot.debt > 0n || item.snapshot.collateral > 0n)),
+  );
   const active = activeDebtPositions(borrowMarkets);
   const idle = zeroDebtMarkets(borrowMarkets);
   const reconciledEpisodes = useMemo(() => {
@@ -37,7 +38,6 @@ export function useLoanBook() {
   }), [active, address, rawAudit.events, reconciledEpisodes]);
   return { address, isConnected, ...rates, venues, positions, audit, borrowMarkets, active, idle, views };
 }
-
 function loanView(position: OpenPosition, events: ReturnType<typeof useAudit>['events'], lifecycleId: string | null, episode: ReturnType<typeof episodeForVenue>) {
   const history = loanRateHistory(events, lifecycleId ?? '');
   const { venue, snapshot } = position;
@@ -64,5 +64,4 @@ function loanView(position: OpenPosition, events: ReturnType<typeof useAudit>['e
     positionReadFailed: !snapshot.ready,
   });
 }
-
 export type { ActiveLoanView };
