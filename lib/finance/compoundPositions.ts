@@ -30,7 +30,6 @@ function choosePrimary(group: CompoundLoanBookPosition[]): CompoundLoanBookPosit
       : verified.length > 0
         ? verified
         : group;
-
   return [...candidates].sort((left, right) => {
     const collateralDelta = collateralUsd(right) - collateralUsd(left);
     if (Math.abs(collateralDelta) > 0.000001) return collateralDelta;
@@ -51,12 +50,14 @@ function accountDebt(group: CompoundLoanBookPosition[]): bigint {
  * Compound V3 debt belongs to the wallet's Comet account, not to an individual
  * collateral asset. Boro models each supported BTC collateral as a Venue, so a
  * raw position scan can repeat the exact same borrowBalanceOf() debt on several
- * venue rows and accidentally render multiple "open loans".
+ * venue rows and accidentally render multiple loans or emit duplicate/false
+ * safety alerts.
  *
- * For loan-book presentation/accounting, assign the account-level debt to one
- * representative collateral row and set sibling rows' debt to zero. Their
- * collateral is preserved, so a genuinely supplied secondary collateral remains
- * visible as a supplied/no-debt position rather than becoming a phantom loan.
+ * Assign the account-level debt to one representative collateral row and set
+ * sibling rows' debt to zero. Their collateral is preserved. Derived debt-risk
+ * fields are neutralized on those sibling rows because the raw values were
+ * calculated by pairing the account debt with only that sibling collateral and
+ * therefore are not a valid standalone loan risk measurement.
  */
 export function normalizeCompoundLoanBookPositions<T extends CompoundLoanBookPosition>(positions: T[]): T[] {
   const groups = new Map<string, T[]>();
@@ -67,7 +68,6 @@ export function normalizeCompoundLoanBookPositions<T extends CompoundLoanBookPos
     list.push(position);
     groups.set(key, list);
   }
-
   if ([...groups.values()].every((group) => group.length <= 1)) return positions;
 
   const primaryByKey = new Map<string, T>();
@@ -83,13 +83,23 @@ export function normalizeCompoundLoanBookPositions<T extends CompoundLoanBookPos
     if (!key) return position;
     const primary = primaryByKey.get(key);
     if (!primary) return position;
-    const nextDebt = position === primary ? (debtByKey.get(key) ?? position.snapshot.debt) : 0n;
-    if (nextDebt === position.snapshot.debt) return position;
+
+    const isPrimary = position === primary;
+    const nextDebt = isPrimary ? (debtByKey.get(key) ?? position.snapshot.debt) : 0n;
+    if (isPrimary && nextDebt === position.snapshot.debt) return position;
+
     return {
       ...position,
       snapshot: {
         ...position.snapshot,
         debt: nextDebt,
+        ...(isPrimary
+          ? null
+          : {
+              healthFactor: null,
+              ltv: 0,
+              liquidationPrice: 0,
+            }),
       },
     };
   });

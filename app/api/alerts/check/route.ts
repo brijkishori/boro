@@ -10,7 +10,8 @@ import { appendTrendSample, buildEarlyWarning, earlyWarningEmailLines, type Tren
 import { resolveRiskThresholds } from '@/lib/finance/riskMonitor';
 import { serverTrendKey } from '@/lib/finance/trendStore';
 import { storeJson, storeSetJson } from '@/lib/store';
-import { adapterFor, readPosition } from '@/lib/adapters';
+import { adapterFor, readPosition, type PositionSnapshot } from '@/lib/adapters';
+import { normalizeCompoundLoanBookPositions } from '@/lib/finance/compoundPositions';
 import { aprAlert, healthAlert, liquidationAlert, loanFacts, monthlyAlert, refinanceAlert, renderAlertEmail, thresholdAlert, weeklyAlert, type AlertCopy } from '@/lib/alertEmail';
 import { allSubscribers, saveSubscriber, shouldSend, type AlertSubscriber } from '@/lib/alerts';
 import { sendMail } from '@/lib/mail';
@@ -138,7 +139,7 @@ function recommendedCopy(address: string, event: AlertEvent, extra: string[] = [
     ? 'Data warning: SimpleBTC could not verify fresh market data'
     : event.message.slice(0, 120);
   const copy = renderAlertEmail(kind, address, [event.message], [
-    `${event.protocol} · chain ${event.chainId}`,
+    `${event.protocol} ┬╖ chain ${event.chainId}`,
     `Market ${event.marketId}`,
     event.currentHf === null ? 'Health factor unavailable' : `Health factor ${event.currentHf}`,
     event.currentOraclePrice === null ? 'Oracle price unavailable' : `Oracle price ${event.currentOraclePrice}`,
@@ -246,9 +247,61 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
   const ledgerEvents = sanitizeDocument(await storeJson(auditStoreKey(subscriber.address))).events;
   const borrowVenues = venues.filter((venue) => venue.action === 'borrow');
 
-  for (const venue of borrowVenues) {
+  type RawPositionRead = {
+    venue: Venue;
+    snapshot: PositionSnapshot | null;
+    verified: boolean;
+    failed: boolean;
+  };
+
+  // Compound V3 borrowBalanceOf() is account/Comet-level and is repeated by the
+  // adapter for every collateral venue. Read every market first, then normalize
+  // the repeated account debt before evaluating any per-position alert.
+  const rawPositionReads: RawPositionRead[] = await Promise.all(borrowVenues.map(async (venue) => {
     try {
-      const snapshot = await readPosition(venue, subscriber.address as Address);
+      return {
+        venue,
+        snapshot: await readPosition(venue, subscriber.address as Address),
+        verified: true,
+        failed: false,
+      };
+    } catch {
+      return { venue, snapshot: null, verified: false, failed: true };
+    }
+  }));
+
+  const normalizedPositions = normalizeCompoundLoanBookPositions(
+    rawPositionReads
+      .filter((item): item is RawPositionRead & { snapshot: PositionSnapshot } => item.snapshot !== null)
+      .map((item) => ({ venue: item.venue, snapshot: item.snapshot, verified: item.verified })),
+  );
+  const normalizedByVenueId = new Map(normalizedPositions.map((item) => [item.venue.id, item]));
+  const rawReadByVenueId = new Map(rawPositionReads.map((item) => [item.venue.id, item]));
+
+  for (const venue of borrowVenues) {
+    const rawRead = rawReadByVenueId.get(venue.id);
+    if (!rawRead || rawRead.failed) {
+      const plan = subscriber.positionPlans?.find((item) => item.approved && item.marketKey === alertMarketKey({
+        wallet: subscriber.address,
+        chainId: venue.chainId,
+        protocol: venue.protocol,
+        marketId: protocolMarketId(venue),
+      }));
+      if (plan) {
+        const evaluated = evaluateEnabledPlan({
+          rules: plan.rules,
+          position: recommendationInput(venue, { collateral: 0n, debt: 0n, healthFactor: null, ltv: 0, liquidationPrice: 0 }, subscriber.address, true, contexts.get(venue.id), plan.benchmarkApr),
+          states: plan.states,
+          at: Date.now(),
+        });
+        plan.states = evaluated.states;
+        for (const event of evaluated.notifications) messages.push(recommendedCopy(subscriber.address, event));
+      }
+      continue;
+    }
+
+    const snapshot = normalizedByVenueId.get(venue.id)?.snapshot ?? rawRead.snapshot;
+    try {
       const closedPlan = subscriber.positionPlans?.find((item) => item.approved && item.marketKey === alertMarketKey({
         wallet: subscriber.address,
         chainId: venue.chainId,
@@ -269,7 +322,7 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
       const facts = loanFacts(venue, snapshot);
       const debtUsd = Number(formatUnits(snapshot.debt, venue.loanDecimals));
       const openDebt = isOpenDebt(debtUsd);
-      const positionName = `${facts.protocol} · ${facts.asset} · ${facts.chain}`;
+      const positionName = `${facts.protocol} ┬╖ ${facts.asset} ┬╖ ${facts.chain}`;
       let monthSummary: ReturnType<typeof summarizeEpisodePeriod> | null = null;
       let openingApr: number | null = null;
       if (openDebt) {
@@ -320,11 +373,13 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
           emailResolutions: plan.emailResolutions,
         });
         plan.states = evaluated.states;
-        const trendLines = await observedTrendLines(subscriber.address, venue, snapshot, debtUsd, plan, now);
-        for (const event of evaluated.notifications) {
-          if (event.alertType === 'monthly-statement') continue;
-          const contextual = event.category === 'position-safety' || event.alertType === 'rate-velocity' || event.alertType.startsWith('utilization-') || event.alertType === 'liquidity';
-          messages.push(recommendedCopy(subscriber.address, event, contextual ? trendLines : []));
+        if (openDebt) {
+          const trendLines = await observedTrendLines(subscriber.address, venue, snapshot, debtUsd, plan, now);
+          for (const event of evaluated.notifications) {
+            if (event.alertType === 'monthly-statement') continue;
+            const contextual = event.category === 'position-safety' || event.alertType === 'rate-velocity' || event.alertType.startsWith('utilization-') || event.alertType === 'liquidity';
+            messages.push(recommendedCopy(subscriber.address, event, contextual ? trendLines : []));
+          }
         }
         if (openDebt && monthSummary && plan.rules.some((rule) => rule.enabled && rule.id === 'monthly-statement')) {
           statementRows.push(...monthlyStatementLines(
@@ -340,15 +395,15 @@ async function evaluate(subscriber: AlertSubscriber, venues: Venue[], record: bo
         }
       }
 
-      if (!coversSafety && snapshot.healthFactor !== null && snapshot.healthFactor < subscriber.rules.healthUrgent && await shouldSend(subscriber.address, 'hf-urgent', venue.id, 6, record)) {
+      if (openDebt && !coversSafety && snapshot.healthFactor !== null && snapshot.healthFactor < subscriber.rules.healthUrgent && await shouldSend(subscriber.address, 'hf-urgent', venue.id, 6, record)) {
         messages.push(healthAlert('urgent', subscriber.address, facts));
-      } else if (!coversSafety && snapshot.healthFactor !== null && snapshot.healthFactor < subscriber.rules.healthWarn && await shouldSend(subscriber.address, 'hf-warn', venue.id, 12, record)) {
+      } else if (openDebt && !coversSafety && snapshot.healthFactor !== null && snapshot.healthFactor < subscriber.rules.healthWarn && await shouldSend(subscriber.address, 'hf-warn', venue.id, 12, record)) {
         messages.push(healthAlert('health', subscriber.address, facts));
       }
-      if (!coversSafety && drop <= subscriber.rules.liqDistancePct && await shouldSend(subscriber.address, 'liq', venue.id, 12, record)) {
+      if (openDebt && !coversSafety && drop <= subscriber.rules.liqDistancePct && await shouldSend(subscriber.address, 'liq', venue.id, 12, record)) {
         messages.push(liquidationAlert(subscriber.address, facts));
       }
-      if (!coversRate && venue.borrowApr >= subscriber.rules.aprAbove && await shouldSend(subscriber.address, 'apr', venue.id, 24, record)) {
+      if (openDebt && !coversRate && venue.borrowApr >= subscriber.rules.aprAbove && await shouldSend(subscriber.address, 'apr', venue.id, 24, record)) {
         messages.push(aprAlert(subscriber.address, facts));
       }
       if (debtUsd > 0 && snapshot.collateral > 0n) {
