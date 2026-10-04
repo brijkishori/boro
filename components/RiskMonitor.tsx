@@ -921,6 +921,8 @@ export default function RiskMonitor({
               ethPriceUsd={ethPriceUsd}
               sourceFreshness={report.domains.position === 'fresh' && report.domains.oracle === 'fresh' ? 'fresh' : 'stale'}
               targetCandidateId={candidateId}
+              walletDebtAssetBalance={liveInput.walletDebtAssetBalance ?? null}
+              walletDebtFresh={report.domains.walletBalance === 'fresh'}
             />
           </section>
       </div>

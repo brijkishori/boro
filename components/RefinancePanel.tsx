@@ -5,6 +5,7 @@ import { formatApr, formatUsd } from '@/lib/amount';
 import { formatHealthFactor, formatPercent } from '@/lib/finance/format';
 import { chainLabel, protocolLabel, type Venue } from '@/lib/protocol';
 import { qualifyRefinancePlan } from '@/lib/finance/refinanceAlertQualification';
+import { buildPhase6D4Readiness } from '@/lib/finance/assistedRefinance';
 import {
   buildMigrationPlan,
   calculateRateStability,
@@ -31,6 +32,8 @@ interface RefinancePanelProps {
   ethPriceUsd?: number | null;
   sourceFreshness?: 'fresh' | 'stale' | 'unavailable';
   targetCandidateId?: string | null;
+  walletDebtAssetBalance?: number | null;
+  walletDebtFresh?: boolean;
 }
 
 export default function RefinancePanel({
@@ -51,6 +54,8 @@ export default function RefinancePanel({
   ethPriceUsd,
   sourceFreshness = 'fresh',
   targetCandidateId,
+  walletDebtAssetBalance = null,
+  walletDebtFresh = false,
 }: RefinancePanelProps) {
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(targetCandidateId ?? null);
   const [expandedDetailsId, setExpandedDetailsId] = useState<string | null>(targetCandidateId ?? null);
@@ -271,6 +276,13 @@ export default function RefinancePanel({
             const dest = plan.destinationMarket;
             const qualification = qualifyRefinancePlan(plan);
             const isQualified = qualification.status === 'QUALIFIED_FOR_REVIEW';
+            const executionReadiness = buildPhase6D4Readiness({
+              plan,
+              sourceVenue,
+              walletDebtAssetAvailable: walletDebtAssetBalance,
+              walletFresh: walletDebtFresh,
+              qualificationPassed: isQualified,
+            });
             const isTargeted = Boolean(targetCandidateId && dest.id === targetCandidateId);
 
             return (
@@ -513,16 +525,82 @@ export default function RefinancePanel({
                       </div>
                     )}
 
-                    {/* Migration Funding Reality (Section 13) */}
+                    {/* Migration Funding Reality + Phase 6D.4 execution readiness */}
                     <div className="rounded border bg-background/50 p-2">
                       <h5 className="font-semibold text-foreground">Migration Funding Reality</h5>
                       <p className="mt-1 text-muted-foreground">
-                        Collateral cannot simply be withdrawn from {protocolLabel(sourceVenue.protocol)} while debt exists.
-                        Source debt (${debt.toLocaleString()}) must be repaid first using wallet USDC, external funds, or a flash refinancing mechanism.
+                        Collateral cannot be withdrawn from {protocolLabel(sourceVenue.protocol)} while debt exists.
+                        Phase 6D.4 therefore models a staged, self-funded refinance: repay source debt, withdraw source collateral, supply the same collateral to the destination, then borrow on the destination.
                       </p>
-                      <p className="mt-1 font-medium text-amber-600 dark:text-amber-400">
-                        Comparison only — execution path not currently supported.
+                      <p className="mt-1 text-muted-foreground">
+                        Atomic/flash refinancing is not implemented. The wallet must temporarily fund the full source debt before collateral can move.
                       </p>
+                    </div>
+
+                    <div className={`rounded border p-2 ${executionReadiness.eligible ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-amber-500/40 bg-amber-500/5'}`}>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h5 className="font-semibold text-foreground">Phase 6D.4 · Staged execution readiness</h5>
+                        <span className={`font-semibold ${executionReadiness.eligible ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                          {executionReadiness.eligible ? 'READY' : 'BLOCKED'}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        <div className="rounded border bg-background/70 p-2">
+                          <p className="text-muted-foreground">Source debt to close</p>
+                          <p className="font-semibold">{formatUsd(executionReadiness.sourceDebt)}</p>
+                        </div>
+                        <div className="rounded border bg-background/70 p-2">
+                          <p className="text-muted-foreground">USDC needed up front</p>
+                          <p className="font-semibold">{formatUsd(executionReadiness.sourceDebtFundingRequired)}</p>
+                          <p className="text-[10px] text-muted-foreground">Includes {formatUsd(executionReadiness.sourceDebtFundingBuffer)} accrual buffer</p>
+                        </div>
+                        <div className="rounded border bg-background/70 p-2">
+                          <p className="text-muted-foreground">Wallet USDC · Base</p>
+                          <p className="font-semibold">{executionReadiness.walletDebtAssetAvailable === null ? 'Unknown' : formatUsd(executionReadiness.walletDebtAssetAvailable)}</p>
+                        </div>
+                        <div className="rounded border bg-background/70 p-2">
+                          <p className="text-muted-foreground">Funding shortfall</p>
+                          <p className={`font-semibold ${(executionReadiness.fundingShortfall ?? 0) > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                            {executionReadiness.fundingShortfall === null ? 'Unknown' : formatUsd(executionReadiness.fundingShortfall)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="mt-2">
+                        <p className="font-medium">Required sequence</p>
+                        <ol className="mt-1 list-inside list-decimal space-y-0.5 text-muted-foreground">
+                          {executionReadiness.steps.map((step) => (
+                            <li key={step.action}>{step.label}: {step.asset === sourceVenue.loanSymbol ? formatUsd(step.amount) : `${step.amount.toFixed(5)} ${step.asset}`}</li>
+                          ))}
+                        </ol>
+                        <p className="mt-1 text-[10px] text-muted-foreground">Estimated wallet confirmations: {executionReadiness.estimatedWalletConfirmations[0]}–{executionReadiness.estimatedWalletConfirmations[1]} depending on token approvals.</p>
+                      </div>
+
+                      {executionReadiness.blockingIssues.length > 0 && (
+                        <div className="mt-2">
+                          <p className="font-medium text-amber-600 dark:text-amber-400">Execution blockers</p>
+                          <ul className="mt-1 list-inside list-disc space-y-0.5 text-muted-foreground">
+                            {executionReadiness.blockingIssues.map((issue) => <li key={issue}>{issue}</li>)}
+                          </ul>
+                        </div>
+                      )}
+
+                      <div className="mt-2">
+                        <p className="font-medium text-muted-foreground">Safety model</p>
+                        <ul className="mt-1 list-inside list-disc space-y-0.5 text-muted-foreground">
+                          {executionReadiness.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                        </ul>
+                      </div>
+
+                      {executionReadiness.eligible ? (
+                        <p className="mt-2 font-medium text-emerald-600 dark:text-emerald-400">
+                          Self-funded migration prerequisites are satisfied. Transaction orchestration can be staged only after another fresh review.
+                        </p>
+                      ) : (
+                        <p className="mt-2 font-medium text-amber-600 dark:text-amber-400">
+                          No refinance transactions will be offered while any blocker remains.
+                        </p>
+                      )}
                     </div>
                   </div>
                 )}
